@@ -577,6 +577,9 @@ subpacknames = [
     'pyrocko.scenario.targets',
     'pyrocko.scenario.sources',
     'pyrocko.obspy_compat',
+    'pyrocko.squirrel',
+    'pyrocko.squirrel.io',
+    'pyrocko.squirrel.client',
 ]
 
 
