@@ -5,6 +5,7 @@ Reference
    :maxdepth: 3
    :includehidden:
 
+   squirrel
    io
    trace
    model
