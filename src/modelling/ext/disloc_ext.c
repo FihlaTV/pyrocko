@@ -307,7 +307,7 @@ static PyObject* w_disloc(PyObject *m, PyObject *args) {
   shape_want[1] = 10;
   if (! good_array(models_arr, NPY_FLOAT64, 2, shape_want))
     return NULL;
-  
+
   shape_want[0] = PyArray_SHAPE(((PyArrayObject*) coords_arr))[0];
   shape_want[1] = 2;
   if (! good_array(coords_arr, NPY_FLOAT64, 2, shape_want))
