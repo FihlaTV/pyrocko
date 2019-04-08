@@ -543,7 +543,7 @@ class OkadaTestCase(unittest.TestCase):
             add_subplot(fig, 3, 3, '$u_{normal}$', 2, typ='scatter')
             plt.show()
 
-            
+
 if __name__ == '__main__':
     util.setup_logging('test_okada', 'warning')
     unittest.main()
