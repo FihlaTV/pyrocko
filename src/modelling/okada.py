@@ -7,7 +7,7 @@ import logging
 
 from pyrocko import moment_tensor as mt
 from pyrocko.guts import Bool, Float, String, Timestamp
-from pyrocko.gf import Source
+# from pyrocko.gf import Source
 from pyrocko.model import Location
 from pyrocko.modelling import disloc_ext, okada_ext
 
@@ -86,7 +86,7 @@ class AnalyticalSource(Location, Cloneable):
     def easting(self):
         return self.east_shift
 
-    update = Source.update
+    # update = Source.update
 
 
 class AnalyticalRectangularSource(AnalyticalSource):
@@ -328,10 +328,8 @@ class OkadaSource(AnalyticalRectangularSource):
         aw2 = patch_width / 2.
 
         source_points = num.zeros((nlength * nwidth, 3))
-        source_points[:, 0] = (
-            il - 1) * patch_length + num.abs(al1)
-        source_points[:, 1] = (
-            iw - 1) * patch_width + num.abs(aw1)
+        source_points[:, 0] = il * patch_length + num.abs(al1)
+        source_points[:, 1] = iw * patch_width + num.abs(aw1)
 
         source_points[:, 0] += self.al1
         source_points[:, 1] -= self.aw2
@@ -354,7 +352,7 @@ class OkadaSource(AnalyticalRectangularSource):
             north_shift=coord[0], east_shift=coord[1],
             depth=coord[2], al1=al1, al2=al2, aw1=aw1, aw2=aw2,
             **kwargs)
-            for coord in source_points_rot]
+            for coord in source_points_rot], source_points
 
     @property
     def segments(self):

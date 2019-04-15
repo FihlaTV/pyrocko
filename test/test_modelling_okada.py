@@ -216,7 +216,7 @@ class OkadaTestCase(unittest.TestCase):
             lat=1., lon=-1., north_shift=100., east_shift=200., depth=50.,
             al1=al1, al2=al2, aw1=aw1, aw2=aw2, strike=strike, dip=dip)
 
-        source_disc = source.discretize(nlength, nwidth)
+        source_disc, _ = source.discretize(nlength, nwidth)
 
         if show_plot:
             import matplotlib.pyplot as plt
