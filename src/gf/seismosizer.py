@@ -2224,8 +2224,8 @@ class RectangularDynamicSource(RectangularSource):
         times_interp = interpolator(
             num.hstack((
                 source_points[:, 0].reshape(-1, 1),
-                source_points[:, 1].reshape(-1, 1)))
-            ).reshape(ny_interp, nx_interp)
+                source_points[:, 1].reshape(-1, 1))))
+        times_interp = times_interp.reshape(ny_interp, nx_interp)
 
         return src, source_disc, times_interp
 
