@@ -1978,7 +1978,7 @@ class RectangularSource(SourceWithDerivedMagnitude):
                 return latlon[:, ::-1]
             else:
                 return num.concatenate(
-                    (latlon,points[:, 2].reshape((len(points), 1))),
+                    (latlon, points[:, 2].reshape((len(points), 1))),
                     axis=1)
 
     def pyrocko_moment_tensor(self, store=None, target=None):
