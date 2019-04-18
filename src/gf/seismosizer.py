@@ -2076,7 +2076,7 @@ class RectangularDynamicSource(RectangularSource):
         '''
 
         if points is None and store is not None:
-            _, _, _, points, _= self._discretize_points(store, cs='xyz')
+            _, _, _, points, _ = self._discretize_points(store, cs='xyz')
 
         if target is not None:
             interpolation = target.interpolation
