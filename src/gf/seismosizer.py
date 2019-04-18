@@ -16,16 +16,20 @@ import logging
 import resource
 
 import numpy as num
+from scipy.interpolate import RegularGridInterpolator
 
 from pyrocko.guts import (Object, Float, String, StringChoice, List,
                           Timestamp, Int, SObject, ArgumentError, Dict,
                           ValidationError)
 from pyrocko.guts_array import Array
 
+from pyrocko import eikonal_ext
+
 from pyrocko import moment_tensor as pmt
 from pyrocko import trace, util, config, model
 from pyrocko.orthodrome import ne_to_latlon
 from pyrocko.model import Location
+from pyrocko.modelling import OkadaSource, DislocationInverter
 
 from . import meta, store, ws
 from .targets import Target, StaticTarget, SatelliteTarget
@@ -265,6 +269,57 @@ def outline_rect_source(strike, dip, length, width, anchor):
     anch_x, anch_y = map_anchor[anchor]
     points[:, 0] -= anch_x * 0.5 * length
     points[:, 1] -= anch_y * 0.5 * width
+
+    rotmat = num.asarray(
+        pmt.euler_to_matrix(dip * d2r, strike * d2r, 0.0))
+
+    return num.dot(rotmat.T, points.T).T
+
+
+def points_on_rect_source(
+        strike, dip, length, width, anchor,
+        discretized_basesource=None, points_x=None, points_y=None):
+
+    ln = length
+    wd = width
+
+    if isinstance(points_x, list) or isinstance(points_x, float):
+        points_x = num.array([points_x])
+    if isinstance(points_y, list) or isinstance(points_y, float):
+        points_y = num.array([points_y])
+
+    if discretized_basesource:
+        ds = discretized_basesource
+
+        nl_patches = ds.nl + 1
+        nw_patches = ds.nw + 1
+        
+        npoints = nl_patches * nw_patches
+        points = num.zeros(shape=(npoints, 3))
+        ln_patches = num.array([il for il in range(nl_patches)])
+        wd_patches = num.array([iw for iw in range(nw_patches)])
+
+        points_ln =\
+            2 * ((ln_patches - num.min(ln_patches)) / num.ptp(ln_patches)) - 1
+        points_wd =\
+            2 * ((wd_patches - num.min(wd_patches)) / num.ptp(wd_patches)) - 1
+
+        for il in range(nl_patches):
+            for iw in range(nw_patches):
+                points[il * nw_patches + iw, :] = num.array([
+                    points_ln[il] * ln * 0.5,
+                    points_wd[iw] * wd * 0.5, 0.0])
+
+    elif points_x.any() and points_y.any():
+        points = num.zeros(shape=((len(points_x), 3)))
+        for i, (x, y) in enumerate(zip(points_x, points_y)):
+            points[i, :] = num.array(
+                [x * 0.5 * ln, y * 0.5 * wd, 0.0])
+
+    anch_x, anch_y = map_anchor[anchor]
+    
+    points[:, 0] -= anch_x * 0.5 * ln
+    points[:, 1] -= anch_y * 0.5 * wd
 
     rotmat = num.asarray(
         pmt.euler_to_matrix(dip * d2r, strike * d2r, 0.0))
@@ -1848,11 +1903,12 @@ class RectangularSource(SourceWithDerivedMagnitude):
         else:
             amplitudes *= self.get_moment(store, target)
 
-        return points, times, amplitudes, dl, dw
+        return points, times, amplitudes, dl, dw, nl, nw
 
     def discretize_basesource(self, store, target=None):
 
-        points, times, amplitudes, dl, dw = self._discretize(store, target)
+        points, times, amplitudes, dl, dw, nl, nw = self._discretize(
+            store, target)
 
         mot = pmt.MomentTensor(
             strike=self.strike, dip=self.dip, rake=self.rake)
@@ -1867,14 +1923,17 @@ class RectangularSource(SourceWithDerivedMagnitude):
             north_shifts=points[:, 0],
             east_shifts=points[:, 1],
             depths=points[:, 2],
-            m6s=m6s)
+            m6s=m6s,
+            dl=dl,
+            dw=dw,
+            nl=nl,
+            nw=nw)
 
         return ds
 
     def outline(self, cs='xyz'):
         points = outline_rect_source(self.strike, self.dip, self.length,
                                      self.width, self.anchor)
-
         points[:, 0] += self.north_shift
         points[:, 1] += self.east_shift
         points[:, 2] += self.depth
@@ -1882,15 +1941,45 @@ class RectangularSource(SourceWithDerivedMagnitude):
             return points
         elif cs == 'xy':
             return points[:, :2]
-        elif cs in ('latlon', 'lonlat'):
+        elif cs in ('latlon', 'lonlat', 'latlondepth'):
+            latlon = ne_to_latlon(
+                self.lat, self.lon, points[:, 0], points[:, 1])
+            latlon = num.array(latlon).T
+            if cs == 'latlon':
+                return latlon
+            elif cs == 'lonlat':
+                return latlon[:, ::-1]
+            else:
+                return num.concatenate(
+                    (latlon,points[:, 2].reshape((len(points),1))),
+                    axis=1)
+
+    def points_on_source(self, cs='xyz', **kwargs):
+
+        points = points_on_rect_source(
+            self.strike, self.dip, self.length, self.width,
+            self.anchor, **kwargs)
+        
+        points[:, 0] += self.north_shift
+        points[:, 1] += self.east_shift
+        points[:, 2] += self.depth
+        if cs == 'xyz':
+            return points
+        elif cs == 'xy':
+            return points[:, :2]
+        elif cs in ('latlon', 'lonlat', 'latlondepth'):
             latlon = ne_to_latlon(
                 self.lat, self.lon, points[:, 0], points[:, 1])
 
             latlon = num.array(latlon).T
             if cs == 'latlon':
                 return latlon
-            else:
+            elif cs == 'lonlat':
                 return latlon[:, ::-1]
+            else:
+                return num.concatenate(
+                    (latlon,points[:, 2].reshape((len(points),1))),
+                    axis=1)
 
     def pyrocko_moment_tensor(self, store=None, target=None):
         return pmt.MomentTensor(
@@ -1918,6 +2007,294 @@ class RectangularSource(SourceWithDerivedMagnitude):
 
         d.update(kwargs)
         return super(RectangularSource, cls).from_pyrocko_event(ev, **d)
+
+
+class RectangularDynamicSource(RectangularSource):
+    '''
+    Merged Eikonal and Okada Source for quasi dynamic rupture modelling
+    '''
+
+    gamma = Float.T(
+        default=0.8,
+        help='Scaling factor between S wave velocity and rupture velocity: '
+             'v_r = gamma * v_s')
+
+    def _discretize_points(self, store, factor=1., *args, **kwargs):
+        '''
+        Discretize source plane with equal vertical and horizontal spacing
+
+        :param store: Greens function database (needs to cover whole region of
+            of the source)
+        :type store: :py:class:`pyrocko.gf.store.Store`
+        :param factor: Measure, how fine the discretization is performed.
+            factor==1 means, discretization spacing is defined by deltat or
+            deltas from store
+        :type factor: optional, float
+
+        :return: Number of points in strike and dip direction, coordinates
+            (latlondepth) and coordinates (xy on fault) for discrete points
+        :rtype: int, int, :py:class:`numpy.ndarray`, :py:class:`numpy.ndarray`
+        '''
+
+        vs_min = store.config.earthmodel_1d.min(get='vs')
+
+        delta = 1. / factor  * num.min([
+            num.min(store.config.deltat * vs_min),
+            num.min(store.config.deltas)])
+        nx = int(num.floor(self.length / delta)) + 1
+
+        delta = self.length / nx
+        ny = int(num.floor(self.width / delta)) + 1
+
+        points_xy = num.zeros((nx * ny, 2))
+        points_xy[:, 0] = num.tile(
+            num.linspace(-1. + 1. / nx, 1. - 1. / nx, nx),
+            ny)
+        points_xy[:, 1] = num.repeat(
+            num.linspace(-1. + 1. / ny, 1. - 1. / ny, ny),
+            nx)
+
+        return nx, ny, delta, self.points_on_source(
+            points_x=points_xy[:, 0],
+            points_y=points_xy[:, 1],
+            **kwargs), points_xy
+
+    def _discretize_vr(self, store=None, target=None, points=None):
+        '''
+        Get rupture velocity for discrete points on source plane
+
+        :param store: Greens function database (needs to cover whole region of
+            of the source)
+        :type store: optional, :py:class:`pyrocko.gf.store.Store`
+        :param target: Target information
+        :type target: optional, :py:class:`pyrocko.gf.target.Target`
+        :param points: xy coordinates on fault (-1:1) of discrete points
+        :type points: optional, :py:class:`numpy.ndarray`, ``(n_points, 2)``
+
+        :return: Rupture velocity assumed as vs * gamma for discrete points
+        :rtype: :py:class:`numpy.ndarray`, ``(points.shape[0], 1)``
+        '''
+
+        if points is None and store is not None:
+             _, _, _, points, _= self._discretize_points(store, cs='xyz')
+
+        if target is not None:
+            interpolation = target.interpolation
+        else:
+            interpolation = 'nearest_neighbor'
+            logger.warn(
+                'no target information available, will use '
+                '"nearest_neighbor" interpolation when extracting shear '
+                'modulus from earth model')
+
+        return store.config.get_vs(
+            self.lat,
+            self.lon,
+            points=points,
+            interpolation=interpolation) * self.gamma
+
+    def discretize_time(
+            self,
+            store,
+            target=None,
+            factor=2.,
+            times=None,
+            *args,
+            **kwargs):
+
+        '''
+        Get rupture start time for discrete points on source plane
+
+        :param store: Greens function database (needs to cover whole region of
+            of the source)
+        :type store: :py:class:`pyrocko.gf.store.Store`
+        :param target: Target information
+        :type target: optional, :py:class:`pyrocko.gf.target.Target`
+        :param factor: Measure, how fine the discretization is performed.
+            factor==1 means, discretization spacing is defined by deltat or
+            deltas from store
+        :type factor: float
+        :param times: Array, containing zeros, where rupture is starting and
+            otherwise -1, where time will be calculated. If not given, rupture
+            starts and 0, 0. Times are given for discrete points with equal
+            horizontal and vertical spacing
+        :type times: optional, :py:class:`numpy.ndarray`
+
+        :return: Coordinates (latlondepth), Coordinates (xy), rupture velocity
+            rupture propagation time of discrete points
+        :rtype: :py:class:`numpy.ndarray`, ``(points.shape[0], 1)``,
+            :py:class:`numpy.ndarray`, ``(points.shape[0], 1)``,
+            :py:class:`numpy.ndarray`, ``(n_points_dip, n_points_strike)``,
+            :py:class:`numpy.ndarray`, ``(n_points_dip, n_points_strike)``
+        '''
+
+        nx, ny, delta, points, points_xy = self._discretize_points(
+            store,
+            factor=factor,
+            cs='xyz')
+
+        vr = self._discretize_vr(
+            store=store, target=target, points=points).reshape(ny, nx)
+
+        if times is None:
+            times = num.zeros((ny, nx)) - 1.0
+            times[0, 0] = 0.
+        elif times.shape != tuple(ny, nx):
+            times = num.zeros((ny, nx)) - 1.0
+            times[0, 0] = 0.
+            logger.warn(
+                'Given times are not in right shape. Therefore standard time '
+                'array is used.')
+
+        eikonal_ext.eikonal_solver_fmm_cartesian(
+                        vr,
+                        times,
+                        delta)
+
+        return points, points_xy, vr, times
+
+    def discretize_okada(
+            self,
+            interpolation='multilinear',
+            factor=1.,
+            *args,
+            **kwargs):
+
+        '''
+        Get rupture start time and OkadaSource elements for discrete points on
+        source plane
+
+        :param interpolation: Kind of interpolation used. Choice between
+            'multilinear' and 'nearest_neighbor'
+        :type interpolation: str
+        :param factor: Measure, how fine the discretization is performed.
+            factor==1 means, discretization spacing is defined by deltat or
+            deltas from store
+        :type factor: float
+
+        :return: Source plane as a single and discretized list of OkadaSources
+            and interpolated rupture propagation times for each point
+        :rtype: :py:class:`pyrocko.modelling.okada.OkadaSource`, ``()``,
+            list of :py:class:`pyrocko.modelling.okada.OkadaSource`,
+                ``(n_points)``,
+            :py:class:`numpy.ndarray`, ``(n_points_dip, n_points_strike)``
+        '''
+
+        _, points_xy, _, times = self.discretize_time(
+            factor=factor, *args, **kwargs)
+
+        anch_x, anch_y = map_anchor[self.anchor]
+        points_xy[:, 0] = (points_xy[:, 0] - anch_x) * self.length * 0.5
+        points_xy[:, 1] = (points_xy[:, 1] - anch_y) * self.width * 0.5
+
+        if interpolation == 'multilinear':
+            kind = 'linear'
+        elif interpolation == 'nearest_neighbor':
+            kind = 'nearest'
+        else:
+            raise TypeError(
+                'Interpolation method %s not available' % interpolation)
+
+        ny, nx = times.shape
+
+        interpolator = RegularGridInterpolator((
+            points_xy[:nx, 0], points_xy[::nx, 1]), times.T, method=kind)
+
+        al = self.length / 2.
+        aw = self.width / 2.
+        al1 = -(al + anch_x * al)
+        al2 = al - anch_x * al
+        aw1 = -aw + anch_y * aw
+        aw2 = aw + anch_y * aw
+        assert num.sum(num.abs([al1, al2])) == self.length
+        assert num.sum(num.abs([aw1, aw2])) == self.width
+
+        src = OkadaSource(
+            lat=self.lat, lon=self.lon,
+            strike=self.strike, dip=self.dip, rake=self.rake,
+            north_shift=self.north_shift, east_shift=self.east_shift,
+            depth=self.depth,
+            al1=al1, al2=al2, aw1=aw1, aw2=aw2)
+
+        nx_interp = int(num.floor(nx / factor))
+        ny_interp = int(num.floor(ny / factor))
+
+        source_disc, source_points = src.discretize(nx_interp, ny_interp)
+
+        times_interp = interpolator(
+            num.hstack((source_points[:, 0].reshape(-1, 1),
+                source_points[:, 1].reshape(-1, 1)))
+            ).reshape(ny_interp, nx_interp)
+
+        return src, source_disc, times_interp
+
+    def get_okada_slip(
+            self,
+            stress_field,
+            times,
+            t,
+            source_list=None,
+            coef_mat=None):
+
+        '''
+        Get slip inverted from OkadaSources for given time after rupture start
+
+        :param stress_field: Array containing the stress change [Pa] for each
+            source patch (order: [
+            src1 dstress_Strike, src1 dstress_Dip, src1 dstress_Tensile,
+            src2 dstress_Strike, ...])
+        :type stress_field: :py:class:`numpy.ndarray`, ``(n_sources * 3, )``
+        :param times: Rupture start times for each point
+        :type times: :py:class:`num.ndarray`,
+            ``(n_points_dip, n_points_strike)``
+        :param source_list: List of all discretized OkadaSource patches
+        :type source_list: list of
+            :py:class:`pyrocko.modelling.okada.OkadaSource`, ``(n_points)``
+        :param coef_mat: coefficient matrix for all sources
+        :type coef_mat: :py:class:`numpy.ndarray`,
+            ``(source_list.shape[0] * 3, source_list.shape[0] * 3)``
+
+        :return: inverted displacements (u_strike, u_dip , u_tensile) for each
+            source patch. order: [
+            patch1 u_Strike, patch1 u_Dip, patch1 u_Tensile,
+            patch2 u_Strike, ...]
+        :rtype: :py:class:`numpy.ndarray`, ``(n_sources * 3, 1)``
+        '''
+
+        boolean = (times < t).flatten()
+        indices_source = num.array(range(boolean.shape[0]))[boolean]
+
+        disloc_est = num.zeros_like(stress_field)
+        indices_disl = num.array(
+            [num.arange(i * 3, i * 3 + 3, 1) for i in indices_source]).flatten()
+
+        if source_list is not None:
+            if stress_field.shape != tuple((len(source_list) * 3, 1)):
+                raise TypeError(
+                    'stress does not have expected shape. Following shape is '
+                    'needed: %i, %i' % stress_field.shape)
+
+            disloc_est[indices_disl] = DislocationInverter.get_disloc_lsq(
+                stress_field[indices_disl],
+                source_list=[source_list[i] for i in indices_source])
+
+        elif coef_mat is not None:
+            if stress_field.shape != tuple((coef_mat.shape[0], 1)):
+                raise TypeError(
+                    'coefficient matrix does not have expected shape. '
+                    'Following shape is '
+                    'needed: (%i, %i)' % (
+                        stress_field.shape[0], stress_field.shape[0]))
+
+            disloc_est[indices_disl] = DislocationInverter.get_disloc_lsq(
+                stress_field[indices_disl],
+                coef_mat=coef_mat[indices_disl, :][:, indices_disl])
+
+        elif coef_mat is None and source_list is None:
+            raise TypeError(
+                'Coefficient matrix or source list need to be defined.')
+
+        return disloc_est
 
 
 class DoubleDCSource(SourceWithMagnitude):
@@ -3439,6 +3816,7 @@ source_classes = [
     CLVDSource,
     MTSource,
     RectangularSource,
+    RectangularDynamicSource,
     DoubleDCSource,
     RingfaultSource,
     SFSource,

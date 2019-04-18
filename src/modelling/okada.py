@@ -550,7 +550,7 @@ class DislocationInverter(object):
                     source_disl[num.newaxis, :],
                     receiver_coords,
                     source_patches_list[isource].lamb,
-                    source_patches_list[isource].mu,
+                    source_patches_list[isource].shearmod,
                     0)
 
                 for irec in range(receiver_coords.shape[0]):
