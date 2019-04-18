@@ -1951,7 +1951,7 @@ class RectangularSource(SourceWithDerivedMagnitude):
                 return latlon[:, ::-1]
             else:
                 return num.concatenate(
-                    (latlon,points[:, 2].reshape((len(points), 1))),
+                    (latlon, points[:, 2].reshape((len(points), 1))),
                     axis=1)
 
     def points_on_source(self, cs='xyz', **kwargs):
@@ -2225,7 +2225,7 @@ class RectangularDynamicSource(RectangularSource):
             num.hstack((
                 source_points[:, 0].reshape(-1, 1),
                 source_points[:, 1].reshape(-1, 1)))
-                ).reshape(ny_interp, nx_interp)
+            ).reshape(ny_interp, nx_interp)
 
         return src, source_disc, times_interp
 
