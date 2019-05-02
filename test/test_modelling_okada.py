@@ -397,8 +397,9 @@ class OkadaTestCase(unittest.TestCase):
         mu = 32.0e9
 
         dstress = -0.5e6
-        min_x = -30.
-        max_x = 30.
+        stress_comp = 0
+        min_x = -width_total / 2.
+        max_x = width_total / 2.
 
         npoints = nlength * nwidth
 
@@ -415,7 +416,7 @@ class OkadaTestCase(unittest.TestCase):
                 if (source_coords[idx, 1] > min_x and
                         source_coords[idx, 1] < max_x):
                     if (il > 0) and (il < nlength - 1):
-                        stress[idx * 3 + 2, 0] = dstress
+                        stress[idx * 3 + stress_comp, 0] = dstress
 
         source_coords[:, 2] = 10000.
         receiver_coords = source_coords.copy()
@@ -431,12 +432,12 @@ class OkadaTestCase(unittest.TestCase):
         disloc_est = DislocationInverter.get_disloc_lsq(stress, coef_mat=gf)
 
         stressdrop = num.zeros(3, )
-        stressdrop[2] = dstress
+        stressdrop[stress_comp] = dstress
         rec_grif = num.linspace(min_x, max_x, 100)
 
         griffith = GriffithCrack(
             width=num.sum(num.abs([min_x, max_x])),
-            poisson=poisson, shear_mod=mu, stressdrop=stressdrop)
+            poisson=poisson, shearmod=mu, stressdrop=stressdrop)
         disloc_grif = griffith.disloc_infinite2d(rec_grif)
 
         if show_plot:
@@ -535,7 +536,7 @@ class OkadaTestCase(unittest.TestCase):
 
         griffith = GriffithCrack(
             width=2 * radius,
-            poisson=poisson, shear_mod=mu, stressdrop=stressdrop)
+            poisson=poisson, shearmod=mu, stressdrop=stressdrop)
         disloc_grif = griffith.disloc_circular(rec_grif)
 
         if show_plot:

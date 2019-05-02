@@ -131,11 +131,11 @@ class AnalyticalRectangularSource(AnalyticalSource):
 
     @property
     def length(self):
-        return num.abs(self.al1) + num.abs(self.al2)
+        return num.sum(num.abs([self.al1, self.al2]))
 
     @property
     def width(self):
-        return num.abs(self.aw1) + num.abs(self.aw2)
+        return num.sum(num.abs([self.aw1, self.aw2]))
 
 
 class OkadaSource(AnalyticalRectangularSource):
@@ -192,14 +192,23 @@ class OkadaSource(AnalyticalRectangularSource):
         :rtype: float
         '''
 
-        if self.poisson and not self.shearmod:
+        if self.shearmod:
+            mu = self.shearmod
+        elif self.poisson:
             self.shearmod = (8. * (1 + self.poisson)) / (1 - 2. * self.poisson)
             mu = self.shearmod
         else:
-            mu = 32e9  # GPa
+            raise ValueError(
+                'Shear modulus or poisson ratio needed for moment calculation')
+
+        disl = 0.
+        if self.slip:
+            disl = num.sqrt(num.sum([disl**2, self.slip**2]))
+        if self.opening:
+            disl = num.sqrt(num.sum([disl**2, self.opening**2]))
 
         A = self.length * self.width
-        return mu * A * self.slip
+        return mu * A * disl
 
     @property
     def moment_magnitude(self):
@@ -300,7 +309,7 @@ class OkadaSource(AnalyticalRectangularSource):
         for ip, param in enumerate(self.parameters):
             self.__setattr__(param, parameter_arr[ip])
 
-    def discretize(self, nlength, nwidth):
+    def discretize(self, nlength, nwidth, *args, **kwargs):
         '''
         Discretize the given fault by nlength * nwidth fault patches
 
@@ -322,6 +331,7 @@ class OkadaSource(AnalyticalRectangularSource):
 
         patch_length = self.length / nlength
         patch_width = self.width / nwidth
+
         al1 = -patch_length / 2.
         al2 = patch_length / 2.
         aw1 = -patch_width / 2.

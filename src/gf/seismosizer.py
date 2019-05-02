@@ -1,8 +1,10 @@
-# http://pyrocko.org - GPLv3
+# https://pyrocko.org - GPLv3
 #
 # The Pyrocko Developers, 21st Century
 # ---|P------/S----------~Lg----------
-from __future__ import absolute_import, division, print_function
+
+from __future__ import absolute_import, print_function, division
+
 from builtins import range, map, zip
 from past.builtins import cmp
 
@@ -20,14 +22,16 @@ from scipy.interpolate import RegularGridInterpolator
 
 from pyrocko.guts import (Object, Float, String, StringChoice, List,
                           Timestamp, Int, SObject, ArgumentError, Dict,
-                          ValidationError)
+                          ValidationError, Any)
 from pyrocko.guts_array import Array
 
 from pyrocko import eikonal_ext
 
-from pyrocko import moment_tensor as pmt
+from pyrocko import moment_tensor as mt
 from pyrocko import trace, util, config, model
-from pyrocko.orthodrome import ne_to_latlon
+from pyrocko.table import Table, LocationRecipe
+from pyrocko.orthodrome import (ne_to_latlon, azidist_numpy,
+                                azidist_to_latlon, latlon_to_ne_numpy)
 from pyrocko.model import Location
 from pyrocko.modelling import OkadaSource, DislocationInverter
 
@@ -211,7 +215,7 @@ def discretize_rect_source(deltas, deltat, north, east, depth,
     points[:, 1] -= anch_y * 0.5 * width
 
     rotmat = num.asarray(
-        pmt.euler_to_matrix(dip * d2r, strike * d2r, 0.0))
+        mt.euler_to_matrix(dip * d2r, strike * d2r, 0.0))
 
     points = num.dot(rotmat.T, points.T).T
 
@@ -271,7 +275,7 @@ def outline_rect_source(strike, dip, length, width, anchor):
     points[:, 1] -= anch_y * 0.5 * width
 
     rotmat = num.asarray(
-        pmt.euler_to_matrix(dip * d2r, strike * d2r, 0.0))
+        mt.euler_to_matrix(dip * d2r, strike * d2r, 0.0))
 
     return num.dot(rotmat.T, points.T).T
 
@@ -322,11 +326,170 @@ def points_on_rect_source(
     points[:, 1] -= anch_y * 0.5 * wd
 
     rotmat = num.asarray(
-        pmt.euler_to_matrix(dip * d2r, strike * d2r, 0.0))
+        mt.euler_to_matrix(dip * d2r, strike * d2r, 0.0))
 
     return num.dot(rotmat.T, points.T).T
 
 
+def lists_to_c5(
+        ref_lat, ref_lon,
+        points=[], north_shifts=[], east_shifts=[], depths=[]):
+    
+    if len(north_shifts) != 0:
+        npoints = len(north_shifts)
+    else:
+        npoints = len(points)
+
+    def to_arr(list):
+        arr = num.asarray(list)
+
+        if arr.ndim == 1:
+            return arr.reshape(len(arr), 1)
+        else:
+            return arr
+
+    if len(points) == 0:
+        points = num.concatenate((
+            to_arr(north_shifts), to_arr(east_shifts), to_arr(depths)), axis=1)
+
+    if isinstance(ref_lat, list) and isinstance(ref_lon, list):
+        return num.concatenate((
+            to_arr(ref_lat), to_arr(ref_lon),
+            to_arr(points)), axis=1)
+    elif isinstance(ref_lat, float) and isinstance(ref_lon, float): 
+        return num.concatenate((
+            to_arr([ref_lat] * npoints), to_arr([ref_lon] * npoints),
+            to_arr(points)), axis=1)
+
+
+class Patch(Object):
+    def __init__(self, points, vertices=None, faces=None):
+        self.points = points
+        self.vertices = vertices
+        self.faces = faces
+
+
+class Geometry(Object):
+    centroid = Any.T(default=Table())
+    outline = None
+    patches = None
+
+    def set_centroid(self, event, **kwargs):
+        for prop in event.T.propnames:
+            value = getattr(event, prop)
+            if value or value==0.:
+                self.centroid.add_col(prop, [value])
+
+    def set_outline(self, ref_lat, ref_lon, points):
+        coords = lists_to_c5(ref_lat, ref_lon, points=points)
+
+        vertices = Table()
+        vertices.add_recipe(LocationRecipe())
+        vertices.add_col((
+            'c5', '',
+            ('ref_lat', 'ref_lon', 'north_shift', 'east_shift', 'depth')),
+            coords)
+
+        fcs = [tuple([i for i in range(-1, len(coords))])]
+        fcs = num.array(fcs, dtype=num.dtype(','.join(['int'] * len(fcs[0]))))
+        faces = Table()
+        faces.add_col('outline', fcs)
+
+        self.outline = Patch(self.centroid, vertices=vertices, faces=faces)
+
+    def refine_outline(self, deltadeg):
+        import math
+
+        assert self.outline
+
+        deg2m = 111120.
+
+        verts = self.outline.vertices
+        latlon = verts.get_col('latlon')
+        ref_lat = verts.get_col('ref_lat')
+        ref_lon = verts.get_col('ref_lon')
+        depth = verts.get_col('depth')
+
+        points = []
+
+        for i in range(len(latlon) - 1):
+            azim, dist = azidist_numpy(
+                latlon[i, 0], latlon[i, 1], latlon[i + 1, 0], latlon[i + 1, 1])
+
+            delta_z = depth[i + 1] - depth[i]
+            total_dist = math.sqrt(dist**2 + (delta_z / deg2m)**2)
+
+            numint = int(math.ceil(total_dist / deltadeg))
+
+            for ii in range(numint):
+                factor = float(ii) / float(numint)
+
+                point = [None] * 3
+
+                point[:2] = azidist_to_latlon(
+                    latlon[i, 0], latlon[i, 1], azim, dist * factor)
+                point[2] =\
+                    depth[i] + delta_z * factor
+
+                points.append(point)
+
+        points.append(points[-1][:])
+        points = num.array(points)
+
+        norths, easts = latlon_to_ne_numpy(
+            ref_lat[0], ref_lon[0], points[:, 0], points[:, 1])
+        depths_new = num.array(points[:, 2]).reshape(len(points[:, 2]), 1)
+
+        coords = num.concatenate(
+            (norths.reshape(len(norths), 1), easts.reshape(len(norths), 1),
+                depths_new),
+            axis=1)
+
+        self.set_outline(ref_lat[0], ref_lon[0], coords)
+
+    def set_patches(self, discretized_basesource, vertices, faces, **kwargs):
+        ds = discretized_basesource
+
+        points = Table()
+        points.add_recipe(LocationRecipe())
+        coords = lists_to_c5(
+            ds.lat, ds.lon,
+            north_shifts=ds.north_shifts,
+            east_shifts=ds.east_shifts,
+            depths=ds.depths)
+        points.add_col((
+            'c5', '',
+            ('ref_lat', 'ref_lon', 'north_shift', 'east_shift', 'depth')),
+            coords)
+
+        verts = Table()
+        verts.add_recipe(LocationRecipe())
+        coords = lists_to_c5(ds.lat, ds.lon, vertices)
+        verts.add_col((
+            'c5', '',
+            ('ref_lat', 'ref_lon', 'north_shift', 'east_shift', 'depth')),
+            coords)
+
+        fcs = Table()
+        fcs.add_col((
+            'patch_faces', ''), faces)
+
+        props = ds.T.propnames
+        for prop, unit, sub_header in zip(
+            ['times', 'm6s'], ['s', 'Pa'],
+            [(), ('mnn', 'mee', 'mdd', 'mne', 'mnd', 'med')]):
+
+            if prop in props:
+                values = getattr(ds, prop)
+                points.add_col((prop, unit, sub_header), values)
+                fcs.add_col((prop, unit, sub_header), values)
+
+        self.patches = Patch(points, vertices=verts, faces=fcs)
+
+        for prop in ['dl', 'dw', 'nl', 'nw']:
+            setattr(self.patches, prop, getattr(ds, prop))
+
+ 
 class InvalidGridDef(Exception):
     pass
 
@@ -959,38 +1122,6 @@ class SmoothRampSTF(STF):
                 self.duration, self.rise_ratio, self.anchor)
 
 
-class ResonatorSTF(STF):
-    '''
-    Simple resonator like source time function.
-
-    f(t) = 0 for t < 0
-    f(t) = e^{-t/tau} * sin(2 * pi * f * t)
-    '''
-
-    duration = Float.T(
-        default=0.0,
-        help='decay time')
-
-    frequency = Float.T(
-        default=1.0,
-        help='resonance frequency')
-
-    def discretize_t(self, deltat, tref):
-        tmin_stf = tref
-        tmax_stf = tref + self.duration * 3
-        tmin = math.floor(tmin_stf / deltat) * deltat
-        tmax = math.ceil(tmax_stf / deltat) * deltat
-        times = util.arange2(tmin, tmax, deltat)
-        amplitudes = num.exp(-(times-tref)/self.duration) \
-            * num.sin(2.0 * num.pi * self.frequency * (times-tref))
-
-        return times, amplitudes
-
-    def base_key(self):
-        return (type(self).__name__,
-                self.duration, self.frequency)
-
-
 class STFMode(StringChoice):
     choices = ['pre', 'post']
 
@@ -1182,6 +1313,13 @@ class Source(Location, Cloneable):
             duration=duration,
             **kwargs)
 
+    def geometry(self, **kwargs):
+        geom = Geometry()
+        geom.set_centroid(self.pyrocko_event(**kwargs))
+        geom.set_outline(self.lat, self.lon, self.outline(cs='xyz'))
+
+        return geom
+
     def outline(self, cs='xyz'):
         points = num.atleast_2d(num.zeros([1, 3]))
 
@@ -1242,17 +1380,17 @@ class SourceWithMagnitude(Source):
         if 'moment' in kwargs:
             mom = kwargs.pop('moment')
             if 'magnitude' not in kwargs:
-                kwargs['magnitude'] = float(pmt.moment_to_magnitude(mom))
+                kwargs['magnitude'] = float(mt.moment_to_magnitude(mom))
 
         Source.__init__(self, **kwargs)
 
     @property
     def moment(self):
-        return float(pmt.magnitude_to_moment(self.magnitude))
+        return float(mt.magnitude_to_moment(self.magnitude))
 
     @moment.setter
     def moment(self, value):
-        self.magnitude = float(pmt.moment_to_magnitude(value))
+        self.magnitude = float(mt.moment_to_magnitude(value))
 
     def pyrocko_event(self, store=None, target=None, **kwargs):
         return Source.pyrocko_event(
@@ -1293,7 +1431,7 @@ class SourceWithDerivedMagnitude(Source):
         if 'moment' in kwargs:
             mom = kwargs.pop('moment')
             if 'magnitude' not in kwargs:
-                kwargs['magnitude'] = float(pmt.moment_to_magnitude(mom))
+                kwargs['magnitude'] = float(mt.moment_to_magnitude(mom))
 
         Source.__init__(self, **kwargs)
 
@@ -1313,7 +1451,7 @@ class SourceWithDerivedMagnitude(Source):
         return self.magnitude
 
     def get_moment(self, store=None, target=None):
-        return float(pmt.magnitude_to_moment(
+        return float(mt.magnitude_to_moment(
             self.get_magnitude(store, target)))
 
     def pyrocko_moment_tensor(self, store=None, target=None):
@@ -1349,8 +1487,7 @@ class ExplosionSource(SourceWithDerivedMagnitude):
     discretized_source_class = meta.DiscretizedExplosionSource
 
     def base_key(self):
-        return SourceWithDerivedMagnitude.base_key(self) + \
-            (self.volume_change,)
+        return Source.base_key(self) + (self.volume_change,)
 
     def check_conflicts(self):
         if self.magnitude is not None and self.volume_change is not None:
@@ -1367,9 +1504,10 @@ class ExplosionSource(SourceWithDerivedMagnitude):
             moment = self.volume_change * \
                 self.get_moment_to_volume_change_ratio(store, target)
 
-            return float(pmt.moment_to_magnitude(abs(moment)))
+            return float(mt.moment_to_magnitude(moment))
+
         else:
-            return float(pmt.moment_to_magnitude(1.0))
+            return float(mt.moment_to_magnitude(1.0))
 
     def get_volume_change(self, store=None, target=None):
         self.check_conflicts()
@@ -1378,7 +1516,7 @@ class ExplosionSource(SourceWithDerivedMagnitude):
             return self.volume_change
 
         elif self.magnitude is not None:
-            moment = float(pmt.magnitude_to_moment(self.magnitude))
+            moment = float(mt.magnitude_to_moment(self.magnitude))
             return moment / self.get_moment_to_volume_change_ratio(
                 store, target)
 
@@ -1414,17 +1552,13 @@ class ExplosionSource(SourceWithDerivedMagnitude):
 
         amplitudes *= self.get_moment(store, target) * math.sqrt(2. / 3.)
 
-        if self.volume_change is not None:
-            if self.volume_change < 0.:
-                amplitudes *= -1
-
         return meta.DiscretizedExplosionSource(
             m0s=amplitudes,
             **self._dparams_base_repeated(times))
 
     def pyrocko_moment_tensor(self, store=None, target=None):
         a = self.get_moment(store, target) * math.sqrt(2. / 3.)
-        return pmt.MomentTensor(m=pmt.symmat6(a, a, a, 0., 0., 0.))
+        return mt.MomentTensor(m=mt.symmat6(a, a, a, 0., 0., 0.))
 
 
 class RectangularExplosionSource(ExplosionSource):
@@ -1524,7 +1658,6 @@ class RectangularExplosionSource(ExplosionSource):
         elif cs in ('latlon', 'lonlat'):
             latlon = ne_to_latlon(
                 self.lat, self.lon, points[:, 0], points[:, 1])
-
             latlon = num.array(latlon).T
             if cs == 'latlon':
                 return latlon
@@ -1557,11 +1690,10 @@ class DCSource(SourceWithMagnitude):
         return Source.base_key(self) + (self.strike, self.dip, self.rake)
 
     def get_factor(self):
-        return float(pmt.magnitude_to_moment(self.magnitude))
+        return float(mt.magnitude_to_moment(self.magnitude))
 
     def discretize_basesource(self, store, target=None):
-        mot = pmt.MomentTensor(
-            strike=self.strike, dip=self.dip, rake=self.rake)
+        mot = mt.MomentTensor(strike=self.strike, dip=self.dip, rake=self.rake)
 
         times, amplitudes = self.effective_stf_pre().discretize_t(
             store.config.deltat, 0.0)
@@ -1570,7 +1702,7 @@ class DCSource(SourceWithMagnitude):
             **self._dparams_base_repeated(times))
 
     def pyrocko_moment_tensor(self, store=None, target=None):
-        return pmt.MomentTensor(
+        return mt.MomentTensor(
             strike=self.strike,
             dip=self.dip,
             rake=self.rake,
@@ -1617,18 +1749,18 @@ class CLVDSource(SourceWithMagnitude):
         return Source.base_key(self) + (self.azimuth, self.dip)
 
     def get_factor(self):
-        return float(pmt.magnitude_to_moment(self.magnitude))
+        return float(mt.magnitude_to_moment(self.magnitude))
 
     @property
     def m6(self):
         a = math.sqrt(4. / 3.) * self.get_factor()
-        m = pmt.symmat6(-0.5 * a, -0.5 * a, a, 0., 0., 0.)
-        rotmat1 = pmt.euler_to_matrix(
+        m = mt.symmat6(-0.5 * a, -0.5 * a, a, 0., 0., 0.)
+        rotmat1 = mt.euler_to_matrix(
             d2r * (self.dip - 90.),
             d2r * (self.azimuth - 90.),
             0.)
         m = rotmat1.T * m * rotmat1
-        return pmt.to6(m)
+        return mt.to6(m)
 
     @property
     def m6_astuple(self):
@@ -1643,7 +1775,7 @@ class CLVDSource(SourceWithMagnitude):
             **self._dparams_base_repeated(times))
 
     def pyrocko_moment_tensor(self, store=None, target=None):
-        return pmt.MomentTensor(m=pmt.symmat6(*self.m6_astuple))
+        return mt.MomentTensor(m=mt.symmat6(*self.m6_astuple))
 
     def pyrocko_event(self, store=None, target=None, **kwargs):
         mt = self.pyrocko_moment_tensor(store, target)
@@ -1717,12 +1849,12 @@ class MTSource(Source):
 
     def get_magnitude(self, store=None, target=None):
         m6 = self.m6
-        return pmt.moment_to_magnitude(
+        return mt.moment_to_magnitude(
             math.sqrt(num.sum(m6[0:3]**2) + 2.0 * num.sum(m6[3:6]**2)) /
             math.sqrt(2.))
 
     def pyrocko_moment_tensor(self, store=None, target=None):
-        return pmt.MomentTensor(m=pmt.symmat6(*self.m6_astuple))
+        return mt.MomentTensor(m=mt.symmat6(*self.m6_astuple))
 
     def pyrocko_event(self, store=None, target=None, **kwargs):
         mt = self.pyrocko_moment_tensor(store, target)
@@ -1738,11 +1870,6 @@ class MTSource(Source):
         mt = ev.moment_tensor
         if mt:
             d.update(m6=tuple(map(float, mt.m6())))
-        else:
-            if ev.magnitude is not None:
-                mom = pmt.magnitude_to_moment(ev.magnitude)
-                v = math.sqrt(2./3.) * mom
-                d.update(m6=(v, v, v, 0., 0., 0.))
 
         d.update(kwargs)
         return super(MTSource, cls).from_pyrocko_event(ev, **d)
@@ -1820,8 +1947,7 @@ class RectangularSource(SourceWithDerivedMagnitude):
         optional=True,
         default=1,
         help='Sub-source decimation factor, a larger decimation will'
-             ' make the result inaccurate but shorten the necessary'
-             ' computation time (use for testing puposes only).')
+             ' shorten the necessary computation time.')
 
     def base_key(self):
         return SourceWithDerivedMagnitude.base_key(self) + (
@@ -1856,10 +1982,10 @@ class RectangularSource(SourceWithDerivedMagnitude):
                     'interpolation method are available')
 
             amplitudes = self._discretize(store, target)[2]
-            return float(pmt.moment_to_magnitude(num.sum(amplitudes)))
+            return float(mt.moment_to_magnitude(num.sum(amplitudes)))
 
         else:
-            return float(pmt.moment_to_magnitude(1.0))
+            return float(mt.moment_to_magnitude(1.0))
 
     def get_factor(self):
         return 1.0
@@ -1910,7 +2036,7 @@ class RectangularSource(SourceWithDerivedMagnitude):
         points, times, amplitudes, dl, dw, nl, nw = self._discretize(
             store, target)
 
-        mot = pmt.MomentTensor(
+        mot = mt.MomentTensor(
             strike=self.strike, dip=self.dip, rake=self.rake)
 
         m6s = num.repeat(mot.m6()[num.newaxis, :], times.size, axis=0)
@@ -1930,6 +2056,31 @@ class RectangularSource(SourceWithDerivedMagnitude):
             nw=nw)
 
         return ds
+
+    def geometry(self, *args, **kwargs):
+        geom = Geometry()
+        geom.set_centroid(self.pyrocko_event(**kwargs))
+        geom.set_outline(self.lat, self.lon, self.outline(cs='xyz'), **kwargs)
+
+        ds = self.discretize_basesource(*args)
+        vertices = self.points_on_source(
+            cs='xyz', discretized_basesource=ds)
+
+        faces = []
+        for iw in range(ds.nw):
+            for il in range(ds.nl):
+                faces.append((
+                    il * (ds.nw + 1) + iw,
+                    il * (ds.nw + 1) + iw + 1,
+                    (il + 1) * (ds.nw + 1) + iw + 1,
+                    (il + 1) * (ds.nw + 1) + iw,
+                    il * (ds.nw + 1) + iw))
+
+        faces = num.array(faces, dtype=num.dtype(('int,int,int,int,int')))
+
+        geom.set_patches(ds, vertices, faces, **kwargs)
+
+        return geom
 
     def outline(self, cs='xyz'):
         points = outline_rect_source(self.strike, self.dip, self.length,
@@ -1982,7 +2133,7 @@ class RectangularSource(SourceWithDerivedMagnitude):
                     axis=1)
 
     def pyrocko_moment_tensor(self, store=None, target=None):
-        return pmt.MomentTensor(
+        return mt.MomentTensor(
             strike=self.strike,
             dip=self.dip,
             rake=self.rake,
@@ -2214,10 +2365,13 @@ class RectangularDynamicSource(RectangularSource):
             strike=self.strike, dip=self.dip, rake=self.rake,
             north_shift=self.north_shift, east_shift=self.east_shift,
             depth=self.depth,
-            al1=al1, al2=al2, aw1=aw1, aw2=aw2)
+            al1=al1, al2=al2, aw1=aw1, aw2=aw2,
+            poisson=kwargs.get('poisson', 0.25),
+            shearmod=kwargs.get('shearmod', 32e9),
+            opening=kwargs.get('opening', 0.))
 
-        nx_interp = int(num.floor(nx / factor))
-        ny_interp = int(num.floor(ny / factor))
+        nx_interp = kwargs.get('nlength', int(num.floor(nx / factor)))
+        ny_interp = kwargs.get('nwidth', int(num.floor(ny / factor)))
 
         source_disc, source_points = src.discretize(nx_interp, ny_interp)
 
@@ -2264,7 +2418,6 @@ class RectangularDynamicSource(RectangularSource):
 
         boolean = (times < t).flatten()
         indices_source = num.array(range(boolean.shape[0]))[boolean]
-
         disloc_est = num.zeros_like(stress_field)
         indices_disl = num.array(
             [num.arange(i * 3, i * 3 + 3, 1) for i in indices_source]
@@ -2285,8 +2438,7 @@ class RectangularDynamicSource(RectangularSource):
                 raise TypeError(
                     'coefficient matrix does not have expected shape. '
                     'Following shape is '
-                    'needed: (%i, %i)' % (
-                        stress_field.shape[0], stress_field.shape[0]))
+                    'needed: %i, %i' % stress_field.shape)
 
             disloc_est[indices_disl] = DislocationInverter.get_disloc_lsq(
                 stress_field[indices_disl],
@@ -2294,9 +2446,10 @@ class RectangularDynamicSource(RectangularSource):
 
         elif coef_mat is None and source_list is None:
             raise TypeError(
-                'Coefficient matrix or source list need to be defined.')
+                'Coefficient matrix or source list needs to be defined.')
 
         return disloc_est
+
 
 
 class DoubleDCSource(SourceWithMagnitude):
@@ -2439,10 +2592,10 @@ class DoubleDCSource(SourceWithMagnitude):
     def discretize_basesource(self, store, target=None):
         a1 = 1.0 - self.mix
         a2 = self.mix
-        mot1 = pmt.MomentTensor(strike=self.strike1, dip=self.dip1,
-                                rake=self.rake1, scalar_moment=a1)
-        mot2 = pmt.MomentTensor(strike=self.strike2, dip=self.dip2,
-                                rake=self.rake2, scalar_moment=a2)
+        mot1 = mt.MomentTensor(strike=self.strike1, dip=self.dip1,
+                               rake=self.rake1, scalar_moment=a1)
+        mot2 = mt.MomentTensor(strike=self.strike2, dip=self.dip2,
+                               rake=self.rake2, scalar_moment=a2)
 
         delta_north = math.cos(self.azimuth * d2r) * self.distance
         delta_east = math.sin(self.azimuth * d2r) * self.distance
@@ -2478,13 +2631,11 @@ class DoubleDCSource(SourceWithMagnitude):
     def pyrocko_moment_tensor(self, store=None, target=None):
         a1 = 1.0 - self.mix
         a2 = self.mix
-        mot1 = pmt.MomentTensor(strike=self.strike1, dip=self.dip1,
-                                rake=self.rake1,
-                                scalar_moment=a1 * self.moment)
-        mot2 = pmt.MomentTensor(strike=self.strike2, dip=self.dip2,
-                                rake=self.rake2,
-                                scalar_moment=a2 * self.moment)
-        return pmt.MomentTensor(m=mot1.m() + mot2.m())
+        mot1 = mt.MomentTensor(strike=self.strike1, dip=self.dip1,
+                               rake=self.rake1, scalar_moment=a1 * self.moment)
+        mot2 = mt.MomentTensor(strike=self.strike2, dip=self.dip2,
+                               rake=self.rake2, scalar_moment=a2 * self.moment)
+        return mt.MomentTensor(m=mot1.m() + mot2.m())
 
     def pyrocko_event(self, store=None, target=None, **kwargs):
         return SourceWithMagnitude.pyrocko_event(
@@ -2559,7 +2710,7 @@ class RingfaultSource(SourceWithMagnitude):
         points[:, 0] = num.cos(phi) * 0.5 * self.diameter
         points[:, 1] = num.sin(phi) * 0.5 * self.diameter
 
-        rotmat = num.array(pmt.euler_to_matrix(
+        rotmat = num.array(mt.euler_to_matrix(
             self.dip * d2r, self.strike * d2r, 0.0))
         points = num.dot(rotmat.T, points.T).T  # !!! ?
 
@@ -2567,8 +2718,8 @@ class RingfaultSource(SourceWithMagnitude):
         points[:, 1] += self.east_shift
         points[:, 2] += self.depth
 
-        m = num.array(pmt.MomentTensor(strike=90., dip=90., rake=-90.,
-                                       scalar_moment=1.0 / n).m())
+        m = num.array(mt.MomentTensor(strike=90., dip=90., rake=-90.,
+                                      scalar_moment=1.0 / n).m())
 
         rotmats = num.transpose(
             [[num.cos(phi), num.sin(phi), num.zeros(n)],
@@ -3038,64 +3189,60 @@ class OutOfBoundsContext(Object):
     components = List.T(String.T())
 
 
-def process_dynamic_timeseries(work, psources, ptargets, engine, nthreads=0):
-    dsource_cache = {}
-    tcounters = list(range(6))
+def process_subrequest_dynamic(work, pshared=None):
+    engine = pshared['engine']
+    _, _, isources, itargets = work
 
-    store_ids = set()
-    sources = set()
-    targets = set()
+    sources = [pshared['sources'][isource] for isource in isources]
+    targets = [pshared['targets'][itarget] for itarget in itargets]
 
-    for itarget, target in enumerate(ptargets):
-        target._id = itarget
+    components = set()
+    for target in targets:
+        rule = engine.get_rule(sources[0], target)
+        components.update(rule.required_components(target))
 
-    for w in work:
-        _, _, isources, itargets = w
+    try:
+        base_seismogram, tcounters = engine.base_seismogram(
+            sources[0],
+            targets[0],
+            components,
+            pshared['dsource_cache'])
 
-        sources.update([psources[isource] for isource in isources])
-        targets.update([ptargets[itarget] for itarget in itargets])
+    except meta.OutOfBounds as e:
+        e.context = OutOfBoundsContext(
+            source=sources[0],
+            target=targets[0],
+            distance=sources[0].distance_to(targets[0]),
+            components=components)
+        raise
 
-    store_ids = set([t.store_id for t in targets])
+    n_records_stacked = 0
+    t_optimize = 0.0
+    t_stack = 0.0
+    for _, tr in base_seismogram.items():
+        n_records_stacked += tr.n_records_stacked
+        t_optimize += tr.t_optimize
+        t_stack += tr.t_stack
 
-    for isource, source in enumerate(psources):
+    results = []
+    for isource, source in zip(isources, sources):
+        for itarget, target in zip(itargets, targets):
+            try:
+                result = engine._post_process_dynamic(
+                    base_seismogram, source, target)
+                result.n_records_stacked = n_records_stacked
+                result.n_shared_stacking = len(sources) * len(targets)
+                result.t_optimize = t_optimize
+                result.t_stack = t_stack
 
-        components = set()
-        for itarget, target in enumerate(targets):
-            rule = engine.get_rule(source, target)
-            components.update(rule.required_components(target))
+            except SeismosizerError as e:
+                result = e
 
-        for store_id in store_ids:
-            store_targets = [t for t in targets if t.store_id == store_id]
+            results.append((isource, itarget, result))
 
-            base_seismograms = engine.base_seismograms(
-                source,
-                store_targets,
-                components,
-                dsource_cache,
-                nthreads)
+    tcounters.append(xtime())
 
-            for iseis, seismogram in enumerate(base_seismograms):
-                for tr in seismogram.values():
-                    if tr.err != store.SeismosizerErrorEnum.SUCCESS:
-                        e = SeismosizerError(
-                            'Seismosizer failed with return code %i\n%s' % (
-                                tr.err, str(
-                                    OutOfBoundsContext(
-                                        source=source,
-                                        target=store_targets[iseis],
-                                        distance=source.distance_to(
-                                            store_targets[iseis]),
-                                        components=components))))
-                        raise e
-
-            for seismogram, target in zip(base_seismograms, store_targets):
-                try:
-                    result = engine._post_process_dynamic(
-                            seismogram, source, target)
-                except SeismosizerError as e:
-                    result = e
-
-                yield (isource, target._id, result), tcounters
+    return results, tcounters
 
 
 def process_dynamic(work, psources, ptargets, engine, nthreads=0):
@@ -3381,55 +3528,6 @@ class LocalEngine(Engine):
 
         return cache[source, store]
 
-    def base_seismograms(self, source, targets, components, dsource_cache,
-                         nthreads=0):
-
-        target = targets[0]
-        interp = set([t.interpolation for t in targets])
-        if len(interp) > 1:
-            logging.warning('Targets have different interpolation schemes!'
-                            ' Choosing %s for all targets.'
-                            % target.interpolation)
-
-        store_ = self.get_store(target.store_id)
-        receivers = [t.receiver(store_) for t in targets]
-
-        ds = store_.config.sample_rate
-        tmin = num.array([t.tmin for t in targets], dtype=num.float)
-        tmax = num.array([t.tmax for t in targets], dtype=num.float)
-
-        if not num.all(num.isnan(tmin)) or not num.all(num.isnan(tmax)):
-            mask_itmin = num.isnan(tmin)
-            itmin = num.floor(tmin * ds).astype(num.int32)
-            nsamples = num.ceil((tmax - tmin) * ds).astype(num.int32)
-
-            itmin[mask_itmin] = 0
-            nsamples[mask_itmin] = -1
-        else:
-            itmin = None
-            nsamples = None
-
-        base_source = self._cached_discretize_basesource(
-            source, store_, dsource_cache, target)
-
-        if target.sample_rate is not None:
-            deltat = 1. / target.sample_rate
-        else:
-            deltat = None
-
-        base_seismograms = store_.calc_seismograms(
-            base_source, receivers, components,
-            deltat=deltat,
-            itmin=itmin, nsamples=nsamples,
-            interpolation=target.interpolation,
-            optimization=target.optimization,
-            nthreads=nthreads)
-
-        for i, base_seismogram in enumerate(base_seismograms):
-            base_seismograms[i] = store.make_same_span(base_seismogram)
-
-        return base_seismograms
-
     def base_seismogram(self, source, target, components, dsource_cache,
                         nthreads):
 
@@ -3480,6 +3578,7 @@ class LocalEngine(Engine):
         if target.tsnapshot is not None:
             n_f = store_.config.sample_rate
             itsnapshot = int(num.floor(target.tsnapshot * n_f))
+            # print target.tsnapshot, n_f, itsnapshot
         else:
             itsnapshot = 1
         tcounters.append(xtime())
@@ -3571,11 +3670,10 @@ class LocalEngine(Engine):
 
         request = kwargs.pop('request', None)
         status_callback = kwargs.pop('status_callback', None)
-        calc_timeseries = kwargs.pop('calc_timeseries', True)
 
         nprocs = kwargs.pop('nprocs', None)
         nthreads = kwargs.pop('nthreads', 1)
-        if nprocs is not None:
+        if nprocs:
             nthreads = nprocs
 
         if request is None:
@@ -3610,12 +3708,6 @@ class LocalEngine(Engine):
 
         # Processing dynamic targets through
         # parimap(process_subrequest_dynamic)
-
-        if calc_timeseries:
-            _process_dynamic = process_dynamic_timeseries
-        else:
-            _process_dynamic = process_dynamic
-
         if request.has_dynamic:
             work_dynamic = [
                 (i, nsub,
@@ -3624,9 +3716,9 @@ class LocalEngine(Engine):
                   if not isinstance(target, StaticTarget)])
                 for (i, k) in enumerate(skeys)]
 
-            for ii_results, tcounters_dyn in _process_dynamic(
+            for ii_results, tcounters_dyn in process_dynamic(
                     work_dynamic, request.sources, request.targets, self,
-                    nthreads):
+                    nthreads=nthreads):
 
                 tcounters_dyn_list.append(num.diff(tcounters_dyn))
                 isource, itarget, result = ii_results
@@ -3831,12 +3923,12 @@ stf_classes = [
     BoxcarSTF,
     TriangularSTF,
     HalfSinusoidSTF,
-    ResonatorSTF,
 ]
 
 __all__ = '''
 SeismosizerError
 BadRequest
+Cloneable
 NoSuchStore
 DerivedMagnitudeError
 STFMode
