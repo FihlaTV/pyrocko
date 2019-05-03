@@ -381,11 +381,11 @@ class OkadaTestCase(unittest.TestCase):
     def test_okada_vs_griffith_inf2d(self):
         from pyrocko.modelling import GriffithCrack
 
-        length_total = 600.
-        width_total = 60.
+        length_total = 50000.
+        width_total = 10000.
 
         nlength = 20
-        nwidth = 24
+        nwidth = 100
         length = length_total / nlength
         width = width_total / nwidth
 
@@ -397,7 +397,7 @@ class OkadaTestCase(unittest.TestCase):
         mu = 32.0e9
 
         dstress = -0.5e6
-        stress_comp = 0
+        stress_comp = 2
         min_x = -width_total / 2.
         max_x = width_total / 2.
 
@@ -438,7 +438,7 @@ class OkadaTestCase(unittest.TestCase):
         griffith = GriffithCrack(
             width=num.sum(num.abs([min_x, max_x])),
             poisson=poisson, shearmod=mu, stressdrop=stressdrop)
-        disloc_grif = griffith.disloc_infinite2d(rec_grif)
+        disloc_grif = griffith.disloc_infinite2d(x1_obs=0., x2_obs=rec_grif)
 
         if show_plot:
             import matplotlib.pyplot as plt
@@ -537,7 +537,7 @@ class OkadaTestCase(unittest.TestCase):
         griffith = GriffithCrack(
             width=2 * radius,
             poisson=poisson, shearmod=mu, stressdrop=stressdrop)
-        disloc_grif = griffith.disloc_circular(rec_grif)
+        disloc_grif = griffith.disloc_infinite2d(x1_obs=0., x2_obs=rec_grif)
 
         if show_plot:
             import matplotlib.pyplot as plt
