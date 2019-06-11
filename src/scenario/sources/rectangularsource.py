@@ -4,7 +4,7 @@ from pyrocko.guts import Float, Int
 from pyrocko import moment_tensor, gf
 
 from .base import SourceGenerator
-from ..base import ScenarioError
+from ..error import ScenarioError
 
 km = 1e3
 guts_prefix = 'pf.scenario'
@@ -52,8 +52,7 @@ class RectangularSourceGenerator(SourceGenerator):
             if None in (self.strike, self.dip, self.rake):
                 raise ScenarioError(
                     'RectangularFaultGenerator: '
-                    'strike, dip, rake'
-                    ' must be used in combination')
+                    'strike, dip, rake must be used in combination.')
 
             strike = self.strike
             dip = self.dip
