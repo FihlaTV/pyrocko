@@ -178,8 +178,8 @@ class OkadaSource(AnalyticalRectangularSource):
 
         Code copied from Kite
         Disregarding the opening (as for now)
-        We assume a shear modulus of :math:`\mu = 36 \mathrm{GPa}`
-        and :math:`M_0 = \mu A D`
+        We assume a shear modulus of :math:`mu = 36 mathrm{GPa}`
+        and :math:`M_0 = mu A D`
 
         .. important ::
 

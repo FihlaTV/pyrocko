@@ -29,9 +29,7 @@ from pyrocko import eikonal_ext
 
 from pyrocko import moment_tensor as mt
 from pyrocko import trace, util, config, model
-from pyrocko.table import Table, LocationRecipe
-from pyrocko.orthodrome import (ne_to_latlon, azidist_numpy,
-                                azidist_to_latlon, latlon_to_ne_numpy)
+from pyrocko.orthodrome import ne_to_latlon
 from pyrocko.model import Location
 from pyrocko.modelling import OkadaSource, DislocationInverter
 
@@ -330,7 +328,7 @@ def points_on_rect_source(
 
     return num.dot(rotmat.T, points.T).T
 
- 
+
 class InvalidGridDef(Exception):
     pass
 
@@ -1153,13 +1151,6 @@ class Source(Location, Cloneable):
             depth=self.depth,
             duration=duration,
             **kwargs)
-
-    def geometry(self, **kwargs):
-        geom = Geometry()
-        geom.set_centroid(self.pyrocko_event(**kwargs))
-        geom.set_outline(self.lat, self.lon, self.outline(cs='xyz'))
-
-        return geom
 
     def outline(self, cs='xyz'):
         points = num.atleast_2d(num.zeros([1, 3]))
