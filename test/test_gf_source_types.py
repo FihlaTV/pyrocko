@@ -51,7 +51,7 @@ class GFSourceTypesTestCase(unittest.TestCase):
         plt.axis('equal')
         plt.show()
 
-    def test_rectangular_dynamic_source(self):
+    def test_stressdrop_source(self):
         store_id = 'crust2_dd'
 
         if not os.path.exists(store_id):
@@ -60,7 +60,7 @@ class GFSourceTypesTestCase(unittest.TestCase):
         engine = gf.LocalEngine(store_superdirs=['.'])
         store = engine.get_store(store_id)
 
-        rds = gf.RectangularDynamicSource(
+        rds = gf.StressDropSource(
             length=20000., width=10000., depth=2000.,
             anchor='top', gamma=0.8, dip=90., strike=0.)
 

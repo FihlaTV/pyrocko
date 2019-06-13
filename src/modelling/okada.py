@@ -419,11 +419,10 @@ class DislocationInverter(object):
 
         coefmat = num.zeros((npoints * n_eq, npoints * n_eq))
 
-        def get_normal(strike, dip):
-            return num.array([
-                -num.sin(strike * d2r) * num.sin(dip * d2r),
-                num.cos(strike * d2r) * num.sin(dip * d2r),
-                -num.cos(dip * d2r)])
+        def ned2sdn_rotmat(strike, dip):
+            rotmat = mt.euler_to_matrix(
+                (dip + 180.) * d2r, strike * d2r, 0.).A
+            return rotmat
 
         unit_disl = 1.
         disl_cases = {
@@ -470,19 +469,20 @@ class DislocationInverter(object):
                 kron = num.zeros_like(eps)
                 kron[:, diag_ind] = 1.
 
-                stress = kron * lamb * dilatation + 2. * mu * eps
+                stress_ned = kron * lamb * dilatation + 2. * mu * eps
 
-                normal = num.tile(get_normal(
+                rotmat = ned2sdn_rotmat(
                     source_patches_list[isource].strike,
-                    source_patches_list[isource].dip), (stress.shape[0], 1))
+                    source_patches_list[isource].dip)
 
-                coefmat[::n_eq, isource * n_eq + idisl] = \
-                    num.sum(stress[:, :3] * normal, axis=1) / unit_disl
-                coefmat[1::n_eq, isource * n_eq + idisl] = \
-                    num.sum(stress[:, 3:6] * normal, axis=1) / unit_disl
-                if n_eq == 3:
-                    coefmat[2::n_eq, isource * n_eq + idisl] = \
-                        num.sum(stress[:, 6:] * normal, axis=1) / unit_disl
+                stress_sdn = num.array([
+                    num.dot(num.dot(
+                        rotmat, stress.reshape(3, 3)), rotmat.T).flatten()
+                    for stress in stress_ned])
+
+                traction_idcs = num.arange(2, n_eq * 3, 3)
+                coefmat[:, isource * n_eq + idisl] = -stress_sdn[
+                    :, traction_idcs].flatten() / unit_disl
 
         return coefmat
 
@@ -524,11 +524,10 @@ class DislocationInverter(object):
 
         coefmat = num.zeros((npoints * n_eq, npoints * n_eq))
 
-        def get_normal(strike, dip):
-            return num.array([
-                -num.sin(strike * d2r) * num.sin(dip * d2r),
-                num.cos(strike * d2r) * num.sin(dip * d2r),
-                -num.cos(dip * d2r)])
+        def ned2sdn_rotmat(strike, dip):
+            rotmat = mt.euler_to_matrix(
+                (dip + 180.) * d2r, strike * d2r, 0.).A
+            return rotmat
 
         unit_disl = 1.
         disl_cases = {
@@ -588,12 +587,16 @@ class DislocationInverter(object):
                                 eps[m, n]
                             stress_tens[n, m] = stress_tens[m, n]
 
-                    normal = get_normal(
+                    rotmat = ned2sdn_rotmat(
                         source_patches_list[isource].strike,
                         source_patches_list[isource].dip)
 
-                    for isig in range(n_eq):
-                        tension = num.sum(stress_tens[isig, :] * normal)
+                    stress_sdn = num.dot(num.dot(
+                        rotmat, stress_tens), rotmat.T)
+
+                    normal = num.array([0., 0., -1.])
+                    for isig in range(3):
+                        tension = num.sum(stress_sdn[isig, :] * normal)
                         coefmat[irec * n_eq + isig, isource * n_eq + idisl] = \
                             tension / unit_disl
 

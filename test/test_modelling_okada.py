@@ -99,8 +99,8 @@ class OkadaTestCase(unittest.TestCase):
         strike = 45.
         dip = 89.
         rake = 90.
-        slip = 1.0
-        opening = 0.
+        slip = 0.0
+        opening = 1.
         poisson = 0.25
         mu = 32.0e9
         lamb = (2 * poisson * mu) / (1 - 2 * poisson)
@@ -438,7 +438,7 @@ class OkadaTestCase(unittest.TestCase):
         griffith = GriffithCrack(
             width=num.sum(num.abs([min_x, max_x])),
             poisson=poisson, shearmod=mu, stressdrop=stressdrop)
-        disloc_grif = griffith.disloc_infinite2d(x1_obs=0., x2_obs=rec_grif)
+        disloc_grif = griffith.disloc_infinite2d(x_obs=rec_grif)
 
         if show_plot:
             import matplotlib.pyplot as plt
@@ -537,7 +537,7 @@ class OkadaTestCase(unittest.TestCase):
         griffith = GriffithCrack(
             width=2 * radius,
             poisson=poisson, shearmod=mu, stressdrop=stressdrop)
-        disloc_grif = griffith.disloc_infinite2d(x1_obs=0., x2_obs=rec_grif)
+        disloc_grif = griffith.disloc_circular(x_obs=rec_grif)
 
         if show_plot:
             import matplotlib.pyplot as plt

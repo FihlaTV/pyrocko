@@ -330,165 +330,6 @@ def points_on_rect_source(
 
     return num.dot(rotmat.T, points.T).T
 
-
-def lists_to_c5(
-        ref_lat, ref_lon,
-        points=[], north_shifts=[], east_shifts=[], depths=[]):
-    
-    if len(north_shifts) != 0:
-        npoints = len(north_shifts)
-    else:
-        npoints = len(points)
-
-    def to_arr(list):
-        arr = num.asarray(list)
-
-        if arr.ndim == 1:
-            return arr.reshape(len(arr), 1)
-        else:
-            return arr
-
-    if len(points) == 0:
-        points = num.concatenate((
-            to_arr(north_shifts), to_arr(east_shifts), to_arr(depths)), axis=1)
-
-    if isinstance(ref_lat, list) and isinstance(ref_lon, list):
-        return num.concatenate((
-            to_arr(ref_lat), to_arr(ref_lon),
-            to_arr(points)), axis=1)
-    elif isinstance(ref_lat, float) and isinstance(ref_lon, float): 
-        return num.concatenate((
-            to_arr([ref_lat] * npoints), to_arr([ref_lon] * npoints),
-            to_arr(points)), axis=1)
-
-
-class Patch(Object):
-    def __init__(self, points, vertices=None, faces=None):
-        self.points = points
-        self.vertices = vertices
-        self.faces = faces
-
-
-class Geometry(Object):
-    centroid = Any.T(default=Table())
-    outline = None
-    patches = None
-
-    def set_centroid(self, event, **kwargs):
-        for prop in event.T.propnames:
-            value = getattr(event, prop)
-            if value or value==0.:
-                self.centroid.add_col(prop, [value])
-
-    def set_outline(self, ref_lat, ref_lon, points):
-        coords = lists_to_c5(ref_lat, ref_lon, points=points)
-
-        vertices = Table()
-        vertices.add_recipe(LocationRecipe())
-        vertices.add_col((
-            'c5', '',
-            ('ref_lat', 'ref_lon', 'north_shift', 'east_shift', 'depth')),
-            coords)
-
-        fcs = [tuple([i for i in range(-1, len(coords))])]
-        fcs = num.array(fcs, dtype=num.dtype(','.join(['int'] * len(fcs[0]))))
-        faces = Table()
-        faces.add_col('outline', fcs)
-
-        self.outline = Patch(self.centroid, vertices=vertices, faces=faces)
-
-    def refine_outline(self, deltadeg):
-        import math
-
-        assert self.outline
-
-        deg2m = 111120.
-
-        verts = self.outline.vertices
-        latlon = verts.get_col('latlon')
-        ref_lat = verts.get_col('ref_lat')
-        ref_lon = verts.get_col('ref_lon')
-        depth = verts.get_col('depth')
-
-        points = []
-
-        for i in range(len(latlon) - 1):
-            azim, dist = azidist_numpy(
-                latlon[i, 0], latlon[i, 1], latlon[i + 1, 0], latlon[i + 1, 1])
-
-            delta_z = depth[i + 1] - depth[i]
-            total_dist = math.sqrt(dist**2 + (delta_z / deg2m)**2)
-
-            numint = int(math.ceil(total_dist / deltadeg))
-
-            for ii in range(numint):
-                factor = float(ii) / float(numint)
-
-                point = [None] * 3
-
-                point[:2] = azidist_to_latlon(
-                    latlon[i, 0], latlon[i, 1], azim, dist * factor)
-                point[2] =\
-                    depth[i] + delta_z * factor
-
-                points.append(point)
-
-        points.append(points[-1][:])
-        points = num.array(points)
-
-        norths, easts = latlon_to_ne_numpy(
-            ref_lat[0], ref_lon[0], points[:, 0], points[:, 1])
-        depths_new = num.array(points[:, 2]).reshape(len(points[:, 2]), 1)
-
-        coords = num.concatenate(
-            (norths.reshape(len(norths), 1), easts.reshape(len(norths), 1),
-                depths_new),
-            axis=1)
-
-        self.set_outline(ref_lat[0], ref_lon[0], coords)
-
-    def set_patches(self, discretized_basesource, vertices, faces, **kwargs):
-        ds = discretized_basesource
-
-        points = Table()
-        points.add_recipe(LocationRecipe())
-        coords = lists_to_c5(
-            ds.lat, ds.lon,
-            north_shifts=ds.north_shifts,
-            east_shifts=ds.east_shifts,
-            depths=ds.depths)
-        points.add_col((
-            'c5', '',
-            ('ref_lat', 'ref_lon', 'north_shift', 'east_shift', 'depth')),
-            coords)
-
-        verts = Table()
-        verts.add_recipe(LocationRecipe())
-        coords = lists_to_c5(ds.lat, ds.lon, vertices)
-        verts.add_col((
-            'c5', '',
-            ('ref_lat', 'ref_lon', 'north_shift', 'east_shift', 'depth')),
-            coords)
-
-        fcs = Table()
-        fcs.add_col((
-            'patch_faces', ''), faces)
-
-        props = ds.T.propnames
-        for prop, unit, sub_header in zip(
-            ['times', 'm6s'], ['s', 'Pa'],
-            [(), ('mnn', 'mee', 'mdd', 'mne', 'mnd', 'med')]):
-
-            if prop in props:
-                values = getattr(ds, prop)
-                points.add_col((prop, unit, sub_header), values)
-                fcs.add_col((prop, unit, sub_header), values)
-
-        self.patches = Patch(points, vertices=verts, faces=fcs)
-
-        for prop in ['dl', 'dw', 'nl', 'nw']:
-            setattr(self.patches, prop, getattr(ds, prop))
-
  
 class InvalidGridDef(Exception):
     pass
@@ -2057,31 +1898,6 @@ class RectangularSource(SourceWithDerivedMagnitude):
 
         return ds
 
-    def geometry(self, *args, **kwargs):
-        geom = Geometry()
-        geom.set_centroid(self.pyrocko_event(**kwargs))
-        geom.set_outline(self.lat, self.lon, self.outline(cs='xyz'), **kwargs)
-
-        ds = self.discretize_basesource(*args)
-        vertices = self.points_on_source(
-            cs='xyz', discretized_basesource=ds)
-
-        faces = []
-        for iw in range(ds.nw):
-            for il in range(ds.nl):
-                faces.append((
-                    il * (ds.nw + 1) + iw,
-                    il * (ds.nw + 1) + iw + 1,
-                    (il + 1) * (ds.nw + 1) + iw + 1,
-                    (il + 1) * (ds.nw + 1) + iw,
-                    il * (ds.nw + 1) + iw))
-
-        faces = num.array(faces, dtype=num.dtype(('int,int,int,int,int')))
-
-        geom.set_patches(ds, vertices, faces, **kwargs)
-
-        return geom
-
     def outline(self, cs='xyz'):
         points = outline_rect_source(self.strike, self.dip, self.length,
                                      self.width, self.anchor)
@@ -2160,7 +1976,7 @@ class RectangularSource(SourceWithDerivedMagnitude):
         return super(RectangularSource, cls).from_pyrocko_event(ev, **d)
 
 
-class RectangularDynamicSource(RectangularSource):
+class StressDropSource(RectangularSource):
     '''
     Merged Eikonal and Okada Source for quasi dynamic rupture modelling
     '''
@@ -2190,12 +2006,15 @@ class RectangularDynamicSource(RectangularSource):
         vs_min = store.config.earthmodel_1d.min(get='vs')
 
         delta = 1. / factor * num.min([
-            num.min(store.config.deltat * vs_min),
+            num.min(store.config.deltat * vs_min / 2.),
             num.min(store.config.deltas)])
         nx = int(num.floor(self.length / delta)) + 1
 
-        delta = self.length / nx
-        ny = int(num.floor(self.width / delta)) + 1
+        if self.length == self.width:
+            ny = nx
+        else:
+            delta = self.length / nx
+            ny = int(num.floor(self.width / delta)) + 1
 
         points_xy = num.zeros((nx * ny, 2))
         points_xy[:, 0] = num.tile(
@@ -2290,7 +2109,7 @@ class RectangularDynamicSource(RectangularSource):
         if times is None:
             times = num.zeros((ny, nx)) - 1.0
             times[0, 0] = 0.
-        elif times.shape != tuple(ny, nx):
+        elif times.shape != tuple((ny, nx)):
             times = num.zeros((ny, nx)) - 1.0
             times[0, 0] = 0.
             logger.warn(
@@ -2416,7 +2235,7 @@ class RectangularDynamicSource(RectangularSource):
         :rtype: :py:class:`numpy.ndarray`, ``(n_sources * 3, 1)``
         '''
 
-        boolean = (times < t).flatten()
+        boolean = (times <= t).flatten()
         indices_source = num.array(range(boolean.shape[0]))[boolean]
         disloc_est = num.zeros_like(stress_field)
         indices_disl = num.array(
@@ -2424,24 +2243,28 @@ class RectangularDynamicSource(RectangularSource):
             ).flatten()
 
         if source_list is not None:
-            if stress_field.shape != tuple((len(source_list) * 3, 1)):
+            if stress_field.shape == tuple((len(source_list) * 3, )):
+                stress_field.reshape(-1, 1)
+            elif stress_field.shape != tuple((len(source_list) * 3, 1)):
                 raise TypeError(
                     'stress does not have expected shape. Following shape is '
                     'needed: %i, %i' % stress_field.shape)
 
             disloc_est[indices_disl] = DislocationInverter.get_disloc_lsq(
-                stress_field[indices_disl],
+                stress_field=stress_field[indices_disl],
                 source_list=[source_list[i] for i in indices_source])
 
         elif coef_mat is not None:
-            if stress_field.shape != tuple((coef_mat.shape[0], 1)):
+            if stress_field.shape == tuple((coef_mat.shape[0], )):
+                stress_field.reshape(-1, 1)
+            elif stress_field.shape != tuple((coef_mat.shape[0], 1)):
                 raise TypeError(
                     'coefficient matrix does not have expected shape. '
                     'Following shape is '
                     'needed: %i, %i' % stress_field.shape)
 
             disloc_est[indices_disl] = DislocationInverter.get_disloc_lsq(
-                stress_field[indices_disl],
+                stress_field=stress_field[indices_disl],
                 coef_mat=coef_mat[indices_disl, :][:, indices_disl])
 
         elif coef_mat is None and source_list is None:
@@ -2449,7 +2272,6 @@ class RectangularDynamicSource(RectangularSource):
                 'Coefficient matrix or source list needs to be defined.')
 
         return disloc_est
-
 
 
 class DoubleDCSource(SourceWithMagnitude):
@@ -3910,7 +3732,7 @@ source_classes = [
     CLVDSource,
     MTSource,
     RectangularSource,
-    RectangularDynamicSource,
+    StressDropSource,
     DoubleDCSource,
     RingfaultSource,
     SFSource,
