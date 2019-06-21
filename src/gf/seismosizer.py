@@ -3002,7 +3002,7 @@ class LocalEngine(Engine):
 
         The config file can be found at :file:`~/.pyrocko/config.pf`
 
-        .. code-block ::
+        .. code-block :: python
 
             gf_store_dirs: ['/home/pyrocko/gf_stores/ak135/']
             gf_store_superdirs: ['/home/pyrocko/gf_stores/']
