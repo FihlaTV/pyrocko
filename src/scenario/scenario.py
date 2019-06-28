@@ -45,20 +45,20 @@ class ScenarioGenerator(LocationGenerator):
         default=DCSourceGenerator.D(),
         help='Sources to spawn in the scenario.')
 
-    def __init__(self, **kwargs):
-        LocationGenerator.__init__(self, **kwargs)
-        for itry in range(self.ntries):
-
+    def find_realisation(self, ntries):
+        for itry in range(ntries):
             try:
-                self.get_stations()
+                self.get_center_latlon()
                 self.get_sources()
+                self.get_targets()
                 return
 
             except LocationGenerationError:
-                self.retry()
+                self.next_realisation()
 
         raise ScenarioError(
-            'Could not generate scenario within %i tries.' % self.ntries)
+            'Could not find a working realisation of the scenario within %i '
+            'tries.' % ntries)
 
     def init_modelling(self, engine):
         self._engine = engine

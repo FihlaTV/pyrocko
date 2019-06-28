@@ -75,40 +75,44 @@ class Generator(Object):
         optional=True,
         help='Random seed for a reproducible scenario.')
 
+    irealisation__ = Int.T(default=0, optional=True)
+
     def __init__(self, **kwargs):
         Object.__init__(self, **kwargs)
         self._seed = None
         self._parent = None
         self.update_hierarchy()
-        self._retry_offset = 0
 
-    def retry(self):
-        self.clear()
-        self._retry_offset += 1
+    def iter_subgenerators(self):
         for val in self.T.ivals(self):
             if isinstance(val, Generator):
-                val.retry()
+                yield val
+            elif isinstance(val, list):
+                for el in val:
+                    if isinstance(el, Generator):
+                        yield el
+
+    def next_realisation(self):
+        self.clear()
+        self.irealisation = (self.irealisation or 0) + 1
+        for sg in self.iter_subgenerators():
+            sg.next_realisation()
 
     def clear(self):
         self._seed = None
 
     def hash(self):
         return hashlib.sha1(
-            (self.dump() + '\n\n%i' % self._retry_offset).encode('utf8'))\
-            .hexdigest()
+            (self.dump() + '\n\n%i' % (self.irealisation or 0))\
+            .encode('utf8')).hexdigest()
 
     def get_seed_offset(self):
         return int(self.hash(), base=16) % N
 
     def update_hierarchy(self, parent=None):
         self._parent = parent
-        for val in self.T.ivals(self):
-            if isinstance(val, Generator):
-                val.update_hierarchy(parent=self)
-            elif isinstance(val, list):
-                for el in val:
-                    if isinstance(el, Generator):
-                        el.update_hierarchy(parent=self)
+        for sg in self.iter_subgenerators():
+            sg.update_hierarchy(parent=self)
 
     def get_seed(self):
         if self._seed is None:
