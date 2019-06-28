@@ -120,20 +120,25 @@ class ScenarioCollectionItem(Object):
             self.get_path(), tmin, tmax)
 
     def get_archive(self):
-        self.ensure_data()
-
         path_tar = self.get_path('archive.tar')
         if not op.exists(path_tar):
-            path_base = self.get_path()
-            path_waveforms = self.get_path('waveforms')
             self.ensure_data()
+            path_base = self.get_path()
 
-            fns = util.select_files(
-                [path_waveforms], show_progress=False)
+            fns = []
+            for name in [
+                    'waveforms', 'meta',
+                    'events.txt', 'generator.yaml', 'scenario.yaml']:
+                path = self.get_path(name)
+                fns.extend(util.select_files(
+                    [path], show_progress=False))
 
             f = tarfile.TarFile(path_tar, 'w')
             for fn in fns:
-                fna = fn[len(path_base)+1:]
+                fna = op.join(
+                    '%s.scenario' % self.scenario_id,
+                    op.relpath(fn, path_base))
+
                 f.add(fn, fna)
 
             f.close()
