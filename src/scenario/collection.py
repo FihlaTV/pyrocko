@@ -15,6 +15,7 @@ from pyrocko.guts import Object, Timestamp
 from pyrocko import gf, guts, util, pile, gmtpy
 
 from .scenario import draw_scenario_gmt
+from .util import suitable_store_ids
 from .error import ScenarioError
 
 op = os.path
@@ -218,3 +219,12 @@ class ScenarioCollection(object):
                 return scenario
 
         raise KeyError(scenario_id)
+
+    def get_stores(self):
+        return [
+            self._engine.get_store(store_id)
+            for store_id in self._engine.get_store_ids()]
+
+    def get_suitable_store_ids(self, distance_range, source_depth_range):
+        return suitable_store_ids(
+            self.get_stores(), distance_range, source_depth_range)

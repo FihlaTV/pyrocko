@@ -1800,6 +1800,14 @@ class Config(Object):
     def is_dynamic(self):
         return not self.is_static()
 
+    def is_suitable(
+            self,
+            distance_range=None,
+            source_depth_range=None,
+            receiver_depth_range=None):
+
+        return False
+
 
 class ConfigTypeA(Config):
     '''
@@ -1990,6 +1998,24 @@ class ConfigTypeA(Config):
             self.distance_min/km,
             self.distance_max/km,
             self.distance_delta/km)
+
+    def is_suitable(
+            self,
+            distance_range=None,
+            source_depth_range=None,
+            receiver_depth_range=None):
+
+        if distance_range is not None:
+            for x in distance_range:
+                if not (self.distance_min <= x <= self.distance_max):
+                    return False
+
+        if source_depth_range is not None:
+            for x in source_depth_range:
+                if not (self.source_depth_min <= x <= self.source_depth_max):
+                    return False
+
+        return True
 
 
 class ConfigTypeB(Config):
@@ -2223,6 +2249,30 @@ class ConfigTypeB(Config):
             self.distance_min/km,
             self.distance_max/km,
             self.distance_delta/km)
+
+    def is_suitable(
+            self,
+            distance_range=None,
+            source_depth_range=None,
+            receiver_depth_range=None):
+
+        if distance_range is not None:
+            for x in distance_range:
+                if not (self.distance_min <= x <= self.distance_max):
+                    return False
+
+        if source_depth_range is not None:
+            for x in source_depth_range:
+                if not (self.source_depth_min <= x <= self.source_depth_max):
+                    return False
+
+        if receiver_depth_range is not None:
+            for x in receiver_depth_range:
+                if not (self.receiver_depth_min <= x
+                        <= self.receiver_depth_max):
+                    return False
+
+        return True
 
 
 class ConfigTypeC(Config):
@@ -2528,6 +2578,25 @@ class ConfigTypeC(Config):
             self.source_north_shift_min/km,
             self.source_north_shift_max/km,
             self.source_north_shift_delta/km)
+
+    def is_suitable(
+            self,
+            distance_range=None,
+            source_depth_range=None,
+            receiver_depth_range=None):
+
+        if distance_range is not None:
+            return False
+
+        if source_depth_range is not None:
+            for x in source_depth_range:
+                if not (self.source_depth_min <= x <= self.source_depth_max):
+                    return False
+
+        if receiver_depth_range is not None:
+            return False
+
+        return True
 
 
 class Weighting(Object):
