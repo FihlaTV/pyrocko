@@ -3044,6 +3044,9 @@ class LocalEngine(Engine):
         self._open_stores = {}
         self._effective_default_store_id = None
 
+    def __getstate__(self):
+        return dict(self.T.inamevals_to_save(self))
+
     def _check_store_dirs_type(self):
         for sdir in ['store_dirs', 'store_superdirs']:
             if not isinstance(self.__getattribute__(sdir), list):
