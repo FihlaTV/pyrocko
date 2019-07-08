@@ -2453,7 +2453,8 @@ class PseudoDynamicRupture(RectangularSource):
             times,
             t,
             source_list=None,
-            coef_mat=None):
+            coef_mat=None,
+            **kwargs):
 
         '''
         Get slip inverted from OkadaSources for given time after rupture start
@@ -2502,7 +2503,8 @@ class PseudoDynamicRupture(RectangularSource):
 
             disloc_est[indices_disl] = DislocationInverter.get_disloc_lsq(
                 stress_field=stress_field[indices_disl],
-                coef_mat=coef_mat[indices_disl, :][:, indices_disl])
+                coef_mat=coef_mat[indices_disl, :][:, indices_disl],
+                **kwargs)
 
         elif source_list is not None:
             if stress_field.shape == tuple((len(source_list) * 3, )):
@@ -2514,7 +2516,8 @@ class PseudoDynamicRupture(RectangularSource):
 
             disloc_est[indices_disl] = DislocationInverter.get_disloc_lsq(
                 stress_field=stress_field[indices_disl],
-                source_list=[source_list[i] for i in indices_source])
+                source_list=[source_list[i] for i in indices_source],
+                **kwargs)
 
 
         elif coef_mat is None and source_list is None:

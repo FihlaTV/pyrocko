@@ -417,7 +417,7 @@ class DislocationInverter(object):
         else:
             n_eq = 3
 
-        coefmat = num.zeros((npoints * n_eq, npoints * n_eq))
+        coefmat = num.zeros((npoints * 3, npoints * 3))
 
         def ned2sdn_rotmat(strike, dip):
             rotmat = mt.euler_to_matrix(
@@ -480,9 +480,13 @@ class DislocationInverter(object):
                         rotmat, stress.reshape(3, 3)), rotmat.T).flatten()
                     for stress in stress_ned])
 
-                traction_idcs = num.arange(2, n_eq * 3, 3)
-                coefmat[:, isource * n_eq + idisl] = -stress_sdn[
-                    :, traction_idcs].flatten() / unit_disl
+                coefmat[0::3, isource * 3 + idisl] = -stress_sdn[
+                    :, 2].flatten() / unit_disl
+                coefmat[1::3, isource * 3 + idisl] = -stress_sdn[
+                    :, 5].flatten() / unit_disl
+                if n_eq == 3:
+                    coefmat[2::3, isource * 3 + idisl] = -stress_sdn[
+                        :, 8].flatten() / unit_disl
 
         return coefmat
 
@@ -522,7 +526,7 @@ class DislocationInverter(object):
         else:
             n_eq = 3
 
-        coefmat = num.zeros((npoints * n_eq, npoints * n_eq))
+        coefmat = num.zeros((npoints * 3, npoints * 3))
 
         def ned2sdn_rotmat(strike, dip):
             rotmat = mt.euler_to_matrix(
@@ -604,7 +608,11 @@ class DislocationInverter(object):
 
     @staticmethod
     def get_disloc_lsq(
-            stress_field, coef_mat=None, source_list=None, **kwargs):
+            stress_field,
+            coef_mat=None,
+            source_list=None,
+            pure_shear=False,
+            **kwargs):
         '''
         Least square inversion to get displacement from stress
 
@@ -637,12 +645,23 @@ class DislocationInverter(object):
 
         if source_list is not None and coef_mat is None:
             coef_mat = DislocationInverter.get_coef_mat(
-                source_list, **kwargs)
+                source_list, pure_shear=pure_shear, **kwargs)
 
-        if not (coef_mat is None):
-            if stress_field.shape[0] == coef_mat.shape[0]:
-                return num.linalg.multi_dot([num.linalg.inv(
-                    num.dot(coef_mat.T, coef_mat)), coef_mat.T, stress_field])
+        idx = num.arange(0, coef_mat.shape[0], 1)
+        if pure_shear:
+            idx = idx[
+                (idx + 1) / 3. != num.floor((idx + 1) / 3.)]
+
+        coef_mat_in = coef_mat[idx, :][:, idx]
+        disloc_est = num.zeros(coef_mat.shape[0])
+
+        if not (coef_mat_in is None):
+            if stress_field[idx].shape[0] == coef_mat_in.shape[0]:
+                disloc_est[idx] = num.linalg.multi_dot([num.linalg.inv(
+                    num.dot(coef_mat_in.T, coef_mat_in)),
+                    coef_mat_in.T,
+                    stress_field[idx, 0]])
+                return disloc_est.reshape(-1, 1)
 
 
 class ProcessorProfile(dict):
