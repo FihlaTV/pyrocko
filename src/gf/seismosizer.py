@@ -2254,6 +2254,7 @@ class PseudoDynamicRupture(RectangularSource):
             target=None,
             nucleation_x=0.,
             nucleation_y=0.,
+            nucleation_times=None,
             times=None,
             *args,
             **kwargs):
@@ -2311,23 +2312,34 @@ class PseudoDynamicRupture(RectangularSource):
             num.linalg.norm(points_xy - num.array([x, y]), axis=1)
             for x, y in zip(nucleation_x, nucleation_y)]).T
 
-        min_row, min_col = num.where(
-            dist_points == num.min(dist_points, axis=0))
+        # min_row, min_col = num.where(
+        #     dist_points == num.min(dist_points, axis=0))
 
-        nucl_indices = num.unique(num.array([
+        nucl_indices = num.array([
             num.where(
                 dist_points[:, icol] == num.min(dist_points[:, icol], axis=0)
-            )[0] for icol in range(nucleation_x.shape[0])]))
+            )[0] for icol in range(nucleation_x.shape[0])]).reshape(-1)
+        # nucleation_times = 
 
-        def initialize_times(nx, ny, zero_ind):
+        def initialize_times(nx, ny, zero_ind, nucl_times=None):
+            if nucl_times is None:
+                nucl_times = num.zeros_like(zero_ind)
             t = num.zeros(nx * ny) - 1.
-            t[zero_ind] = 0.
+            t[zero_ind] = nucl_times
             return t.reshape(ny, nx)
 
         if times is None:
-            times = initialize_times(nx, ny, nucl_indices)
+            times = initialize_times(
+                nx,
+                ny,
+                nucl_indices,
+                nucl_times=nucleation_times)
         elif times.shape != tuple((ny, nx)):
-            times = initialize_times(nx, ny, nucl_indices)
+            times = initialize_times(
+                nx,
+                ny,
+                nucl_indices,
+                nucl_times=nucleation_times)
             logger.warn(
                 'Given times are not in right shape. Therefore standard time '
                 'array is used.')
@@ -2526,7 +2538,7 @@ class PseudoDynamicRupture(RectangularSource):
 
         return disloc_est
 
-    def get_delta_slip(self, store, times, *args, **kwargs):
+    def get_delta_slip(self, store, times, dt=None, *args, **kwargs):
         '''
         Get slip change inverted from OkadaSources depending on store deltat
 
@@ -2552,7 +2564,9 @@ class PseudoDynamicRupture(RectangularSource):
                 :py:class:`numpy.ndarray`, ``(n_times, 1)``
         '''
 
-        dt = store.config.deltat
+        if not dt:
+            dt = store.config.deltat
+
         t_max = num.max(times)
         calc_times = num.arange(0., t_max + dt, dt)
 
