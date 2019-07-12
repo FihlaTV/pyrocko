@@ -75,6 +75,11 @@ class AnalyticalSource(Location, Cloneable):
         help='source origin time',
         optional=True)
 
+    vr = Float.T(
+        default=0.,
+        help='Rupture velocity',
+        optional=True)
+
     def __init__(self, **kwargs):
         Location.__init__(self, **kwargs)
 

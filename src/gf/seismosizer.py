@@ -2312,14 +2312,10 @@ class PseudoDynamicRupture(RectangularSource):
             num.linalg.norm(points_xy - num.array([x, y]), axis=1)
             for x, y in zip(nucleation_x, nucleation_y)]).T
 
-        # min_row, min_col = num.where(
-        #     dist_points == num.min(dist_points, axis=0))
-
         nucl_indices = num.array([
             num.where(
                 dist_points[:, icol] == num.min(dist_points[:, icol], axis=0)
             )[0] for icol in range(nucleation_x.shape[0])]).reshape(-1)
-        # nucleation_times = 
 
         def initialize_times(nx, ny, zero_ind, nucl_times=None):
             if nucl_times is None:
@@ -2382,7 +2378,7 @@ class PseudoDynamicRupture(RectangularSource):
             :py:class:`numpy.ndarray`, ``(n_points_dip, n_points_strike)``
         '''
 
-        _, points_xy, _, times = self.discretize_time(
+        _, points_xy, vr, times = self.discretize_time(
             store=store, factor=factor, *args, **kwargs)
 
         anch_x, anch_y = map_anchor[self.anchor]
@@ -2399,8 +2395,10 @@ class PseudoDynamicRupture(RectangularSource):
 
         ny, nx = times.shape
 
-        interpolator = RegularGridInterpolator((
+        time_interpolator = RegularGridInterpolator((
             points_xy[:nx, 0], points_xy[::nx, 1]), times.T, method=kind)
+        vr_interpolator = RegularGridInterpolator((
+            points_xy[:nx, 0], points_xy[::nx, 1]), vr.T, method=kind)
 
         al = self.length / 2.
         aw = self.width / 2.
@@ -2451,13 +2449,22 @@ class PseudoDynamicRupture(RectangularSource):
             source_disc[isrc].shearmod = shear_mod[isrc]
             source_disc[isrc].poisson = poisson[isrc]
 
-        times_interp = interpolator(
+        times_interp = time_interpolator(
             num.hstack((
                 source_points[:, 0].reshape(-1, 1),
-                source_points[:, 1].reshape(-1, 1)))).reshape(
-                    ny_interp, nx_interp)
+                source_points[:, 1].reshape(-1, 1))))
 
-        return src, source_disc, times_interp
+        vr_interp = vr_interpolator(
+            num.hstack((
+                source_points[:, 0].reshape(-1, 1),
+                source_points[:, 1].reshape(-1, 1))))
+
+        for isrc in range(len(source_disc)):
+            source_disc[isrc].vr = vr_interp[isrc]
+            source_disc[isrc].time = times_interp[isrc]
+
+        return src, source_disc, times_interp.reshape(
+                    ny_interp, nx_interp)
 
     def get_okada_slip(
             self,
