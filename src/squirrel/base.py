@@ -1,3 +1,5 @@
+from __future__ import absolute_import, print_function
+
 import sys
 import os
 import re
@@ -5,14 +7,33 @@ import threading
 import sqlite3
 
 from pyrocko.io_common import FileLoadError
-from pyrocko.guts import Object, Int, List, String, Timestamp, Dict
-from pyrocko import config
+from pyrocko.guts import Object, Int, List, Tuple, String, Timestamp, Dict
+from pyrocko import config, util
 
 from . import model, io
+
+from .model import to_kind_ids, to_kind_id, to_kind, separator
 from .client import fdsn
 
 
 g_databases = {}
+
+
+class NotAvailable(Exception):
+    pass
+
+
+def wrap(l, width=80, indent=''):
+    l = list(l)
+    fwidth = max(len(s) for s in l)
+    nx = max(1, (80-len(indent)) // (fwidth+1))
+    i = 0
+    rows = []
+    while i < len(l):
+        rows.append(indent + ' '.join(x.ljust(fwidth) for x in l[i:i+nx]))
+        i += nx
+
+    return '\n'.join(rows)
 
 
 def get_database(database=None):
@@ -88,18 +109,21 @@ class Selection(object):
             'file_states': self.name + '_file_states',
             'bulkinsert': self.name + '_bulkinsert'}
 
-        self._conn.execute(
+        self._conn.execute(self._register_table(
             '''
                 CREATE TABLE IF NOT EXISTS %(db)s.%(file_states)s (
                     file_id integer PRIMARY KEY,
                     file_state integer)
-            ''' % self._names)
+            ''' % self._names))
 
     def __del__(self):
         if not self._persistent:
             self._delete()
         else:
             self._conn.commit()
+
+    def _register_table(self, s):
+        return self._database._register_table(s)
 
     def get_database(self):
         '''
@@ -121,11 +145,36 @@ class Selection(object):
         Add files to the selection.
 
         :param file_paths: Paths to files to be added to the selection.
-        :type file_paths: ``list`` of ``str``
+        :type file_paths: iterator yielding ``str`` objects
         '''
 
         if isinstance(file_paths, str):
             file_paths = [file_paths]
+
+        try:
+            if len(file_paths) < 100:
+                # short non-iterator file_paths: can do without temp table
+
+                self._conn.executemany(
+                    '''
+                        INSERT OR IGNORE INTO files
+                        VALUES (NULL, ?, NULL, NULL, NULL)
+                    ''', ((x,) for x in file_paths))
+
+                self._conn.executemany(
+                    '''
+                        INSERT OR IGNORE INTO %(db)s.%(file_states)s
+                        SELECT files.file_id, ?
+                        FROM files
+                        WHERE files.path = ?
+                    ''' % self._names, (
+                        (state, filepath) for filepath in file_paths))
+
+                return
+
+        except TypeError:
+            pass
+
         self._conn.execute(
             '''
                 CREATE TEMP TABLE temp.%(bulkinsert)s
@@ -162,6 +211,9 @@ class Selection(object):
         :param file_paths: Paths to files to be removed from the selection.
         :type file_paths: ``list`` of ``str``
         '''
+        if isinstance(file_paths, str):
+            file_paths = [file_paths]
+
         self._conn.executemany(
             '''
                 DELETE FROM %(db)s.%(file_states)s
@@ -199,7 +251,7 @@ class Selection(object):
                 files.size,
                 nuts.file_segment,
                 nuts.file_element,
-                kind_codes.kind,
+                kind_codes.kind_id,
                 kind_codes.codes,
                 nuts.tmin_seconds,
                 nuts.tmin_offset,
@@ -231,6 +283,19 @@ class Selection(object):
 
         if path is not None:
             yield path, nuts
+
+    def iter_paths(self):
+        sql = ('''
+            SELECT
+                files.path
+            FROM %(db)s.%(file_states)s
+            INNER JOIN files
+            ON files.file_id = %(db)s.%(file_states)s.file_id
+            ORDER BY %(db)s.%(file_states)s.file_id
+        ''') % self._names
+
+        for values in self._conn.execute(sql):
+            yield values[0]
 
     def flag_unchanged(self, check=True):
         '''
@@ -295,6 +360,9 @@ class Selection(object):
 
         self._conn.executemany(sql, iter_file_states())
 
+    def get_paths(self):
+        return list(self.iter_paths())
+
 
 class SquirrelStats(Object):
     '''
@@ -306,7 +374,7 @@ class SquirrelStats(Object):
     nnuts = Int.T(
         help='number of index nuts in selection')
     codes = List.T(
-        List.T(String.T()),
+        Tuple.T(content_t=String.T()),
         help='available code sequences in selection, e.g. '
              '(agency, network, station, location) for stations nuts.')
     kinds = List.T(
@@ -315,7 +383,7 @@ class SquirrelStats(Object):
     total_size = Int.T(
         help='aggregated file size of files is selection')
     counts = Dict.T(
-        String.T(), Dict.T(String.T(), Int.T()),
+        String.T(), Dict.T(Tuple.T(content_t=String.T()), Int.T()),
         help='breakdown of how many nuts of any content type and code '
              'sequence are available in selection, ``counts[kind][codes]``')
     tmin = Timestamp.T(
@@ -324,6 +392,28 @@ class SquirrelStats(Object):
     tmax = Timestamp.T(
         optional=True,
         help='latest end time of all nuts in selection')
+
+    def __str__(self):
+        kind_counts = dict(
+            (kind, sum(self.counts[kind].values())) for kind in self.kinds)
+
+        s = '''
+available codes:
+%s
+number of files:               %i
+total size of known files:     %s
+number of index nuts:          %i
+available nut kinds:           %s
+time span of indexed contents: %s - %s''' % (
+            wrap(('.'.join(x) for x in self.codes), indent='  '),
+            self.nfiles,
+            util.human_bytesize(self.total_size),
+            self.nnuts,
+            ', '.join('%s: %i' % (
+                kind, kind_counts[kind]) for kind in sorted(self.kinds)),
+            util.time_to_str(self.tmin), util.time_to_str(self.tmax))
+
+        return s
 
 
 class Squirrel(Selection):
@@ -346,18 +436,20 @@ class Squirrel(Selection):
     def __init__(self, database=None, persistent=None):
         Selection.__init__(self, database=database, persistent=persistent)
         c = self._conn
+        self._contents = {}
 
         self._names.update({
             'nuts': self.name + '_nuts',
             'kind_codes_count': self.name + '_kind_codes_count'})
 
-        c.execute(
+        c.execute(self._register_table(
             '''
                 CREATE TABLE IF NOT EXISTS %(db)s.%(nuts)s (
                     nut_id integer PRIMARY KEY,
                     file_id integer,
                     file_segment integer,
                     file_element integer,
+                    kind_id integer,
                     kind_codes_id integer,
                     tmin_seconds integer,
                     tmin_offset float,
@@ -365,7 +457,7 @@ class Squirrel(Selection):
                     tmax_offset float,
                     deltat float,
                     kscale integer)
-            ''' % self._names)
+            ''' % self._names))
 
         c.execute(
             '''
@@ -373,12 +465,12 @@ class Squirrel(Selection):
                     ON %(nuts)s (file_id, file_segment, file_element)
             ''' % self._names)
 
-        c.execute(
+        c.execute(self._register_table(
             '''
                 CREATE TABLE IF NOT EXISTS %(db)s.%(kind_codes_count)s (
                     kind_codes_id integer PRIMARY KEY,
                     count integer)
-            ''' % self._names)
+            ''' % self._names))
 
         c.execute(
             '''
@@ -401,7 +493,7 @@ class Squirrel(Selection):
         c.execute(
             '''
                 CREATE INDEX IF NOT EXISTS %(db)s.%(nuts)s_index_kscale
-                ON %(nuts)s (kscale, tmin_seconds)
+                ON %(nuts)s (kind_id, kscale, tmin_seconds)
             ''' % self._names)
 
         c.execute(
@@ -469,43 +561,49 @@ class Squirrel(Selection):
 
         Selection._delete(self)
 
-    def _print_tables(self, stream=None):
+    def print_tables(self, table_names=None, stream=None):
         if stream is None:
             stream = sys.stdout
 
-        w = stream.write
+        if isinstance(table_names, str):
+            table_names = [table_names]
 
-        w('\n')
-        for table in [
-                '%(db)s.%(file_states)s',
-                '%(db)s.%(nuts)s',
-                'files',
-                'nuts']:
+        if table_names is None:
+            table_names = [
+                'selection_file_states',
+                'selection_nuts',
+                'selection_kind_codes_count']
+            # 'files', 'nuts', 'kind_codes', 'kind_codes_count']
 
-            w('-' * 64)
-            w('\n')
-            w(table % self._names)
-            w('\n')
-            w('-' * 64)
-            w('\n')
-            sql = ('SELECT * FROM %s' % table) % self._names
-            tab = []
-            for row in self._conn.execute(sql):
-                tab.append([str(x) for x in row])
+        m = {
+            'selection_file_states': '%(db)s.%(file_states)s',
+            'selection_nuts': '%(db)s.%(nuts)s',
+            'selection_kind_codes_count': '%(db)s.%(kind_codes_count)s',
+            'files': 'files',
+            'nuts': 'nuts',
+            'kind_codes': 'kind_codes',
+            'kind_codes_count': 'kind_codes_count'}
 
-            widths = [max(len(x) for x in col) for col in zip(*tab)]
-            for row in tab:
-                w(' '.join(x.ljust(wid) for (x, wid) in zip(row, widths)))
-                w('\n')
+        for table_name in table_names:
+            self._database.print_table(
+                m[table_name] % self._names, stream=stream)
 
-            w('\n')
+    def iter_expand_dirs(self, file_paths):
+        for path in file_paths:
+            if os.path.isdir(path):
+                dpaths = sorted(util.select_files([path], show_progress=False))
+                for dpath in dpaths:
+                    yield dpath
+
+            else:
+                yield path
 
     def add(self, file_paths, kinds=None, format='detect', check=True):
         '''
         Add files to the selection.
 
         :param file_paths: Iterator yielding paths to files to be added to the
-            selection.
+            selection, or `str`, recurses into directories given
         :param kinds: if given, allowed content types to be made available
             through the squirrel selection
         :type kinds: ``list`` of ``str``
@@ -517,7 +615,10 @@ class Squirrel(Selection):
         if isinstance(kinds, str):
             kinds = (kinds,)
 
-        Selection.add(self, file_paths)
+        if isinstance(file_paths, str):
+            file_paths = [file_paths]
+
+        Selection.add(self, self.iter_expand_dirs(file_paths))
         self._load(format, check)
         self._update_nuts(kinds)
 
@@ -535,8 +636,9 @@ class Squirrel(Selection):
         w_kinds = ''
         args = []
         if kinds is not None:
-            w_kinds = 'AND kind_codes.kind IN (%s)' % ', '.join('?'*len(kinds))
-            args.extend(kinds)
+            w_kinds = 'AND kind_codes.kind_id IN (%s)' % ', '.join(
+                '?'*len(kinds))
+            args.extend(to_kind_ids(kinds))
 
         c.execute((
             '''
@@ -556,17 +658,28 @@ class Squirrel(Selection):
                 SET file_state = 2
             ''' % self._names)
 
-    def add_fdsn_site(self, site):
+    def add_fdsn_site(
+            self, site,
+            user_credentials=None,
+            auth_token=None,
+            query_args=None,
+            noquery_age_max=3600.,):
         '''
         Add FDSN site for transparent remote data access.
         '''
 
-        self._sources.append(fdsn.FDSNSource(site))
+        self._sources.append(fdsn.FDSNSource(
+            site,
+            user_credentials=user_credentials,
+            auth_token=auth_token,
+            query_args=query_args,
+            noquery_age_max=noquery_age_max))
 
-    def undig_span(self, tmin, tmax):
+    def get_nuts(self, kind, tmin=None, tmax=None, codes=None):
         '''
         Iterate content intersecting with the half open interval [tmin, tmax[.
 
+        :param kind: ``str``, content kind to extract
         :param tmin: timestamp, start time of interval
         :param tmax: timestamp, end time of interval
 
@@ -575,6 +688,11 @@ class Squirrel(Selection):
         Yields :py:class:`pyrocko.squirrel.Nut` objects representing the
         intersecting content.
         '''
+
+        tmin_avail, tmax_avail = self.get_time_span()
+        if tmin is None:
+            tmin = tmin_avail
+            tmax = tmax_avail
 
         tmin_seconds, tmin_offset = model.tsplit(tmin)
         tmax_seconds, tmax_offset = model.tsplit(tmax)
@@ -587,20 +705,30 @@ class Squirrel(Selection):
             if kscale != tscale_edges.size:
                 tscale = int(tscale_edges[kscale])
                 tmin_cond.append('''
-                    (%(db)s.%(nuts)s.kscale == ?
+                    (%(db)s.%(nuts)s.kind_id = ?
+                        AND %(db)s.%(nuts)s.kscale == ?
                         AND %(db)s.%(nuts)s.tmin_seconds BETWEEN ? AND ?)
                 ''')
                 args.extend(
-                    (kscale, tmin_seconds - tscale - 1, tmax_seconds + 1))
+                    (to_kind_id(kind), kscale,
+                     tmin_seconds - tscale - 1, tmax_seconds + 1))
 
             else:
                 tmin_cond.append('''
-                    (%(db)s.%(nuts)s.kscale == ?
+                    (%(db)s.%(nuts)s.kind_id == ?
+                        AND %(db)s.%(nuts)s.kscale == ?
                         AND %(db)s.%(nuts)s.tmin_seconds <= ?)
                 ''')
 
                 args.extend(
-                    (kscale, tmax_seconds + 1))
+                    (to_kind_id(kind), kscale, tmax_seconds + 1))
+
+        extra_cond = ['%(db)s.%(nuts)s.tmax_seconds >= ?']
+        args.append(tmin_seconds)
+
+        if codes is not None:
+            extra_cond.append('kind_codes.codes GLOB ?')
+            args.append(separator.join(codes))
 
         sql = ('''
             SELECT
@@ -610,7 +738,7 @@ class Squirrel(Selection):
                 files.size,
                 %(db)s.%(nuts)s.file_segment,
                 %(db)s.%(nuts)s.file_element,
-                kind_codes.kind,
+                kind_codes.kind_id,
                 kind_codes.codes,
                 %(db)s.%(nuts)s.tmin_seconds,
                 %(db)s.%(nuts)s.tmin_offset,
@@ -622,19 +750,22 @@ class Squirrel(Selection):
                 ON files.file_id == %(db)s.%(nuts)s.file_id
             INNER JOIN kind_codes
                 ON %(db)s.%(nuts)s.kind_codes_id == kind_codes.kind_codes_id
-            WHERE ( ''' + ' OR '.join(tmin_cond) + ''')
-                AND %(db)s.%(nuts)s.tmax_seconds >= ?
-        ''') % self._names
-        args.append(tmin_seconds)
+            WHERE ( ''' + ' OR '.join(tmin_cond) + ''' )
+                AND ''' + ' AND '.join(extra_cond)) % self._names
 
         for row in self._conn.execute(sql, args):
             nut = model.Nut(values_nocheck=row)
             if nut.tmin < tmax and tmin < nut.tmax:
                 yield nut
 
-    def _undig_span_naiv(self, tmin, tmax):
+    def _get_nuts_naiv(self, kind, tmin=None, tmax=None):
         tmin_seconds, tmin_offset = model.tsplit(tmin)
         tmax_seconds, tmax_offset = model.tsplit(tmax)
+
+        tmin_avail, tmax_avail = self.get_time_span()
+        if tmin is None:
+            tmin = tmin_avail
+            tmax = tmax_avail
 
         sql = '''
             SELECT
@@ -644,7 +775,7 @@ class Squirrel(Selection):
                 files.size,
                 %(db)s.%(nuts)s.file_segment,
                 %(db)s.%(nuts)s.file_element,
-                kind_codes.kind,
+                kind_codes.kind_id,
                 kind_codes.codes,
                 %(db)s.%(nuts)s.tmin_seconds,
                 %(db)s.%(nuts)s.tmin_offset,
@@ -656,16 +787,19 @@ class Squirrel(Selection):
                 ON files.file_id == %(db)s.%(nuts)s.file_id
             INNER JOIN kind_codes
                 ON %(db)s.%(nuts)s.kind_codes_id == kind_codes.kind_codes_id
-            WHERE %(db)s.%(nuts)s.tmax_seconds >= ?
+            WHERE %(db)s.%(nuts)s.kind_id = ?
+                AND %(db)s.%(nuts)s.tmax_seconds >= ?
                 AND %(db)s.%(nuts)s.tmin_seconds <= ?
         ''' % self._names
 
-        for row in self._conn.execute(sql, (tmin_seconds, tmax_seconds+1)):
+        for row in self._conn.execute(
+                sql, (to_kind_id(kind), tmin_seconds, tmax_seconds+1)):
+
             nut = model.Nut(values_nocheck=row)
             if nut.tmin < tmax and tmin < nut.tmax:
                 yield nut
 
-    def time_span(self):
+    def get_time_span(self):
         '''
         Get time interval over all content in selection.
 
@@ -711,6 +845,7 @@ class Squirrel(Selection):
         Iterate over content identifier code sequences available in selection.
 
         :param kind: if given, get codes only for a given content type
+        :type kind: ``str``
 
         Complexity: O(1), independent of number of nuts
         '''
@@ -764,8 +899,8 @@ class Squirrel(Selection):
 
         Complexity: O(1), independent of number of nuts
 
-        :returns: ``dict`` with ``counts[kind][codes] or ``counts[codes]`` 
-            if kind is not ``Null``
+        :returns: ``dict`` with ``counts[kind][codes] or ``counts[codes]``
+            if kind is not ``None``
         '''
         d = {}
         for (k, codes), count in self.iter_counts():
@@ -781,9 +916,11 @@ class Squirrel(Selection):
 
     def update_channel_inventory(self, selection):
         for source in self._sources:
-            source.update_channel_inventory(selection)
-            for path in source.get_channel_file_paths(selection):
-                self.add(path)
+            source.update_channel_inventory(self, selection)
+
+    def update_waveform_inventory(self, selection):
+        for source in self._sources:
+            source.update_waveform_inventory(self, selection)
 
     def get_nfiles(self):
         '''Get number of files in selection.'''
@@ -814,7 +951,7 @@ class Squirrel(Selection):
         Get statistics on contents available through this selection.
         '''
 
-        tmin, tmax = self.time_span()
+        tmin, tmax = self.get_time_span()
 
         return SquirrelStats(
             nfiles=self.get_nfiles(),
@@ -825,6 +962,61 @@ class Squirrel(Selection):
             counts=self.get_counts(),
             tmin=tmin,
             tmax=tmax)
+
+    def get_content(self, nut):
+
+        if nut.key not in self._contents:
+            for nut_loaded in io.iload(
+                    nut.file_path,
+                    segment=nut.file_segment,
+                    format=nut.file_format,
+                    database=self._database):
+
+                self._contents[nut_loaded.key] = nut_loaded.content
+
+        if nut.key not in self._contents:
+            raise NotAvailable(
+                'Unable to retrieve content: %s, %s, %s' % nut.key)
+
+        return self._contents[nut.key]
+
+    def get_stations(self, tmin=None, tmax=None, codes=None):
+
+        nuts = list(
+            self.get_nuts('station', tmin=tmin, tmax=tmax, codes=codes))
+
+        self.check_duplicates(nuts)
+
+        return [
+            self.get_content(nut)
+            for nut in nuts]
+
+    def check_duplicates(self, nuts):
+        print('should check for duplicates')
+
+    def get_channels(self, station):
+        nuts = list(
+            self.get_nuts(
+                'channel', tmin=station.tmin, tmax=station.tmax,
+                codes=station.codes+('*',)))
+
+        self.check_duplicates(nuts)
+
+        return [
+            self.get_content(nut)
+            for nut in nuts]
+
+    def get_pyrocko_stations(self, tmin=None, tmax=None, codes=None):
+        pstations = []
+        for station in self.get_stations(tmin=tmin, tmax=tmax, codes=codes):
+            pstation = station.get_pyrocko_station()
+            self.get_channels(station)
+            pstation.channels = [
+                ch.get_pyrocko_channel() for ch in self.get_channels(station)]
+
+            pstations.append(pstation)
+
+        return pstations
 
     def __str__(self):
         return str(self.get_stats())
@@ -852,18 +1044,31 @@ class Database(object):
         self._database_path = database_path
         self._conn = sqlite3.connect(database_path)
         self._conn.text_factory = str
+        self._tables = {}
         self._initialize_db()
         self._need_commit = False
 
     def get_connection(self):
         return self._conn
 
+    def _register_table(self, s):
+        m = re.search(r'(\S+)\s*\(([^)]+)\)', s)
+        table_name = m.group(1)
+        dtypes = m.group(2)
+        table_header = []
+        for dele in dtypes.split(','):
+            table_header.append(dele.split()[:2])
+
+        self._tables[table_name] = table_header
+
+        return s
+
     def _initialize_db(self):
         c = self._conn.cursor()
         c.execute(
             '''PRAGMA recursive_triggers = true''')
 
-        c.execute(
+        c.execute(self._register_table(
             '''
                 CREATE TABLE IF NOT EXISTS files (
                     file_id integer PRIMARY KEY,
@@ -871,7 +1076,7 @@ class Database(object):
                     format text,
                     mtime float,
                     size integer)
-            ''')
+            '''))
 
         c.execute(
             '''
@@ -879,21 +1084,22 @@ class Database(object):
                 ON files (path)
             ''')
 
-        c.execute(
+        c.execute(self._register_table(
             '''
                 CREATE TABLE IF NOT EXISTS nuts (
                     nut_id integer PRIMARY KEY,
                     file_id integer,
                     file_segment integer,
                     file_element integer,
-                    kind_codes_id text,
+                    kind_id integer,
+                    kind_codes_id integer,
                     tmin_seconds integer,
                     tmin_offset float,
                     tmax_seconds integer,
                     tmax_offset float,
                     deltat float,
                     kscale integer)
-            ''')
+            '''))
 
         c.execute(
             '''
@@ -901,26 +1107,26 @@ class Database(object):
                 ON nuts (file_id, file_segment, file_element)
             ''')
 
-        c.execute(
+        c.execute(self._register_table(
             '''
                 CREATE TABLE IF NOT EXISTS kind_codes (
                     kind_codes_id integer PRIMARY KEY,
-                    kind text,
+                    kind_id integer,
                     codes text)
-            ''')
+            '''))
 
         c.execute(
             '''
                 CREATE UNIQUE INDEX IF NOT EXISTS index_kind_codes
-                ON kind_codes (kind, codes)
+                ON kind_codes (kind_id, codes)
             ''')
 
-        c.execute(
+        c.execute(self._register_table(
             '''
                 CREATE TABLE IF NOT EXISTS kind_codes_count (
                     kind_codes_id integer PRIMARY KEY,
                     count integer)
-            ''')
+            '''))
 
         c.execute(
             '''
@@ -986,7 +1192,7 @@ class Database(object):
                 nut.file_format,
                 nut.file_mtime,
                 nut.file_size))
-            kind_codes.add((nut.kind, nut.codes))
+            kind_codes.add((nut.kind_id, nut.codes))
 
         c.executemany(
             'INSERT OR IGNORE INTO files VALUES (NULL,?,?,?,?)', files)
@@ -1007,14 +1213,15 @@ class Database(object):
                     (NULL, (
                         SELECT file_id FROM files
                         WHERE path == ?
-                     ),?,?,
+                     ),?,?,?,
                      (
                         SELECT kind_codes_id FROM kind_codes
-                        WHERE kind == ? AND codes == ?
+                        WHERE kind_id == ? AND codes == ?
                      ), ?,?,?,?,?,?)
             ''',
             ((nut.file_path, nut.file_segment, nut.file_element,
-              nut.kind, nut.codes,
+              nut.kind_id,
+              nut.kind_id, nut.codes,
               nut.tmin_seconds, nut.tmin_offset,
               nut.tmax_seconds, nut.tmax_offset,
               nut.deltat, nut.kscale) for nut in nuts))
@@ -1031,7 +1238,7 @@ class Database(object):
                 files.size,
                 nuts.file_segment,
                 nuts.file_element,
-                kind_codes.kind,
+                kind_codes.kind_id,
                 kind_codes.codes,
                 nuts.tmin_seconds,
                 nuts.tmin_offset,
@@ -1057,7 +1264,7 @@ class Database(object):
                 files.size,
                 nuts.file_segment,
                 nuts.file_element,
-                kind_codes.kind,
+                kind_codes.kind_id,
                 kind_codes.codes,
                 nuts.tmin_seconds,
                 nuts.tmin_offset,
@@ -1125,12 +1332,12 @@ class Database(object):
         args = []
         sel = ''
         if kind is not None:
-            sel = 'AND kind_codes.kind == ?'
-            args.append(kind)
+            sel = 'AND kind_codes.kind_id == ?'
+            args.append(to_kind_id(kind))
 
         sql = ('''
             SELECT
-                kind_codes.kind,
+                kind_codes.kind_id,
                 kind_codes.codes,
                 %(kind_codes_count)s.count
             FROM %(kind_codes_count)s
@@ -1141,16 +1348,16 @@ class Database(object):
                 ''' + sel + '''
         ''') % {'kind_codes_count': kind_codes_count}
 
-        for kind, codes, count in self._conn.execute(sql, args):
-            yield (kind, tuple(codes.split('\0'))), count
+        for kind_id, codes, count in self._conn.execute(sql, args):
+            yield (to_kind(kind_id), tuple(codes.split(separator))), count
 
     def _iter_codes(self, kind=None, kind_codes_count='kind_codes_count'):
         args = []
         sel = ''
         if kind is not None:
             assert isinstance(kind, str)
-            sel = 'AND kind_codes.kind == ?'
-            args.append(kind)
+            sel = 'AND kind_codes.kind_id == ?'
+            args.append(to_kind_id(kind))
 
         sql = ('''
             SELECT DISTINCT kind_codes.codes FROM %(kind_codes_count)s
@@ -1163,7 +1370,7 @@ class Database(object):
         ''') % {'kind_codes_count': kind_codes_count}
 
         for row in self._conn.execute(sql, args):
-            yield tuple(row[0].split('\0'))
+            yield tuple(row[0].split(separator))
 
     def _iter_kinds(self, codes=None, kind_codes_count='kind_codes_count'):
         args = []
@@ -1171,20 +1378,20 @@ class Database(object):
         if codes is not None:
             assert isinstance(codes, tuple)
             sel = 'AND kind_codes.codes == ?'
-            args.append('\0'.join(codes))
+            args.append(separator.join(codes))
 
         sql = ('''
-            SELECT DISTINCT kind_codes.kind FROM %(kind_codes_count)s
+            SELECT DISTINCT kind_codes.kind_id FROM %(kind_codes_count)s
             INNER JOIN kind_codes
                 ON %(kind_codes_count)s.kind_codes_id
                     == kind_codes.kind_codes_id
             WHERE %(kind_codes_count)s.count > 0
                 ''' + sel + '''
-            ORDER BY kind_codes.kind
+            ORDER BY kind_codes.kind_id
         ''') % {'kind_codes_count': kind_codes_count}
 
         for row in self._conn.execute(sql, args):
-            yield row[0]
+            yield to_kind(row[0])
 
     def iter_kinds(self, codes=None):
         return self._iter_kinds(codes=codes)
@@ -1244,34 +1451,47 @@ class Database(object):
     def __str__(self):
         return str(self.get_stats())
 
-    def _print_tables(self, stream=None):
-        if stream is None:
-            stream = sys.stdout
-
-        w = stream.write
-
-        w('\n')
+    def print_tables(self, stream=None):
         for table in [
                 'files',
                 'nuts']:
 
-            w('-' * 64)
-            w('\n')
-            w(table)
-            w('\n')
-            w('-' * 64)
-            w('\n')
-            sql = ('SELECT * FROM %s' % table)
-            tab = []
-            for row in self._conn.execute(sql):
-                tab.append([str(x) for x in row])
+            self.print_table(table, stream=stream)
 
-            widths = [max(len(x) for x in col) for col in zip(*tab)]
-            for row in tab:
-                w(' '.join(x.ljust(wid) for (x, wid) in zip(row, widths)))
-                w('\n')
+    def print_table(self, name, stream=None):
+
+        if stream is None:
+            stream = sys.stdout
+
+        w = stream.write
+        w('\n')
+        w('\n')
+        w(name)
+        w('\n')
+        sql = 'SELECT * FROM %s' % name
+        tab = []
+        if name in self._tables:
+            headers = self._tables[name]
+            tab.append([None for _ in headers])
+            tab.append([x[0] for x in headers])
+            tab.append([x[1] for x in headers])
+            tab.append([None for _ in headers])
+
+        for row in self._conn.execute(sql):
+            tab.append([str(x) for x in row])
+
+        widths = [
+            max((len(repr(x)) if x is not None else 0) for x in col)
+            for col in zip(*tab)]
+
+        for row in tab:
+            w(' '.join(
+                (repr(x).ljust(wid) if x is not None else ''.ljust(wid, '-'))
+                for (x, wid) in zip(row, widths)))
 
             w('\n')
+
+        w('\n')
 
 
 __all__ = [

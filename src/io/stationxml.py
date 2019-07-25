@@ -1459,7 +1459,7 @@ def load_channel_table(stream):
                 latitude=lat,
                 longitude=lon,
                 elevation=ele,
-                depth=dep,
+                depth=dep or 0.0,
                 azimuth=azi,
                 dip=dip,
                 sensor=Equipment(description=sens),

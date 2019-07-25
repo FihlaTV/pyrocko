@@ -1,9 +1,43 @@
+from __future__ import absolute_import, print_function
+
 import numpy as num
 
 from pyrocko import util
 from pyrocko.guts import Object, String, Timestamp, Float, Int, Unicode
 from pyrocko.guts_array import Array
-from . import io
+
+separator = '\t'
+
+g_content_kinds = [
+    'undefined',
+    'waveform',
+    'station',
+    'channel',
+    'response',
+    'event']
+
+g_content_kind_ids = (
+    UNDEFINED, WAVEFORM, STATION, CHANNEL, RESPONSE, EVENT) = range(
+        len(g_content_kinds))
+
+g_tmin = int(util.str_to_time('1900-01-01 00:00:00'))
+g_tmax = int(util.str_to_time('2100-01-01 00:00:00'))
+
+
+def to_kind(kind_id):
+    return g_content_kinds[kind_id]
+
+
+def to_kinds(kind_ids):
+    return [g_content_kinds[kind_id] for kind_id in kind_ids]
+
+
+def to_kind_id(kind):
+    return g_content_kinds.index(kind)
+
+
+def to_kind_ids(kinds):
+    return [g_content_kinds.index(kind) for kind in kinds]
 
 
 def str_or_none(x):
@@ -23,6 +57,20 @@ def float_or_none(x):
 def int_or_none(x):
     if x is None:
         return None
+    else:
+        return int(x)
+
+
+def int_or_g_tmin(x):
+    if x is None:
+        return g_tmin
+    else:
+        return int(x)
+
+
+def int_or_g_tmax(x):
+    if x is None:
+        return g_tmax
     else:
         return int(x)
 
@@ -75,7 +123,9 @@ class Content(Object):
     Base class for content types in the Squirrel framework.
     '''
 
-    pass
+    @property
+    def scodes(self):
+        return '.'.join(self.codes)
 
 
 class Waveform(Content):
@@ -102,6 +152,12 @@ class Waveform(Content):
         serialize_dtype=num.dtype('<f4'),
         help='numpy array with data samples')
 
+    @property
+    def codes(self):
+        return (
+            self.agency, self.network, self.station, self.location,
+            self.channel, self.extra)
+
 
 class Station(Content):
     '''
@@ -122,6 +178,21 @@ class Station(Content):
     depth = Float.T(optional=True)
 
     description = Unicode.T(optional=True)
+
+    @property
+    def codes(self):
+        return (self.agency, self.network, self.station, self.location)
+
+    def get_pyrocko_station(self):
+        from pyrocko import model
+        return model.Station(
+            network=self.network,
+            station=self.station,
+            location=self.location,
+            lat=self.lat,
+            lon=self.lon,
+            elevation=self.elevation,
+            depth=self.depth)
 
 
 class Channel(Content):
@@ -146,6 +217,19 @@ class Channel(Content):
     dip = Float.T(optional=True)
     azimuth = Float.T(optional=True)
     deltat = Float.T(optional=True)
+
+    @property
+    def codes(self):
+        return (
+            self.agency, self.network, self.station, self.location,
+            self.channel)
+
+    def get_pyrocko_channel(self):
+        from pyrocko import model
+        return model.Channel(
+            name=self.channel,
+            azimuth=self.azimuth,
+            dip=self.dip)
 
 
 class Response(Content):
@@ -189,12 +273,12 @@ class Nut(Object):
     file_segment = Int.T(optional=True)
     file_element = Int.T(optional=True)
 
-    kind = String.T()
+    kind_id = Int.T()
     codes = String.T()
 
-    tmin_seconds = Timestamp.T(optional=True)
+    tmin_seconds = Timestamp.T()
     tmin_offset = Float.T(default=0.0, optional=True)
-    tmax_seconds = Timestamp.T(optional=True)
+    tmax_seconds = Timestamp.T()
     tmax_offset = Float.T(default=0.0, optional=True)
 
     deltat = Float.T(optional=True)
@@ -211,7 +295,7 @@ class Nut(Object):
             file_size=None,
             file_segment=None,
             file_element=None,
-            kind='',
+            kind_id=0,
             codes='',
             tmin_seconds=None,
             tmin_offset=0.0,
@@ -226,7 +310,7 @@ class Nut(Object):
         if values_nocheck is not None:
             (self.file_path, self.file_format, self.file_mtime, self.file_size,
              self.file_segment, self.file_element,
-             self.kind, self.codes,
+             self.kind_id, self.codes,
              self.tmin_seconds, self.tmin_offset,
              self.tmax_seconds, self.tmax_offset,
              self.deltat) = values_nocheck
@@ -239,11 +323,11 @@ class Nut(Object):
             if tmax is not None:
                 tmax_seconds, tmax_offset = tsplit(tmax)
 
-            self.kind = str(kind)
+            self.kind_id = int(kind_id)
             self.codes = str(codes)
-            self.tmin_seconds = int_or_none(tmin_seconds)
+            self.tmin_seconds = int_or_g_tmin(tmin_seconds)
             self.tmin_offset = float(tmin_offset)
-            self.tmax_seconds = int_or_none(tmax_seconds)
+            self.tmax_seconds = int_or_g_tmax(tmax_seconds)
             self.tmax_offset = float(tmax_offset)
             self.deltat = float_or_none(deltat)
             self.file_path = str_or_none(file_path)
@@ -264,6 +348,7 @@ class Nut(Object):
         return not (self == other)
 
     def get_io_backend(self):
+        from . import io
         return io.get_backend(self.file_format)
 
     def file_modified(self):
@@ -271,10 +356,18 @@ class Nut(Object):
             != (self.file_mtime, self.file_size)
 
     @property
+    def key(self):
+        return (
+            self.file_path,
+            self.file_segment,
+            self.file_element,
+            self.file_mtime)
+
+    @property
     def equality_values(self):
         return (
             self.file_segment, self.file_element,
-            self.kind, self.codes,
+            self.kind_id, self.codes,
             self.tmin_seconds, self.tmin_offset,
             self.tmax_seconds, self.tmax_offset, self.deltat)
 
@@ -295,7 +388,7 @@ class Nut(Object):
     @property
     def waveform_kwargs(self):
         agency, network, station, location, channel, extra = \
-            self.codes.split('\0')
+            self.codes.split(separator)
 
         return dict(
             agency=agency,
@@ -310,7 +403,7 @@ class Nut(Object):
 
     @property
     def station_kwargs(self):
-        agency, network, station, location = self.codes.split('\0')
+        agency, network, station, location = self.codes.split(separator)
         return dict(
             agency=agency,
             network=network,
@@ -321,7 +414,8 @@ class Nut(Object):
 
     @property
     def channel_kwargs(self):
-        agency, network, station, location, channel = self.codes.split('\0')
+        agency, network, station, location, channel \
+            = self.codes.split(separator)
 
         return dict(
             agency=agency,
@@ -345,10 +439,11 @@ def make_waveform_nut(
         agency='', network='', station='', location='', channel='', extra='',
         **kwargs):
 
-    codes = '\0'.join((agency, network, station, location, channel, extra))
+    codes = separator.join(
+        (agency, network, station, location, channel, extra))
 
     return Nut(
-        kind='waveform',
+        kind_id=WAVEFORM,
         codes=codes,
         **kwargs)
 
@@ -356,10 +451,10 @@ def make_waveform_nut(
 def make_station_nut(
         agency='', network='', station='', location='', **kwargs):
 
-    codes = '\0'.join((agency, network, station, location))
+    codes = separator.join((agency, network, station, location))
 
     return Nut(
-        kind='station',
+        kind_id=STATION,
         codes=codes,
         **kwargs)
 
@@ -367,10 +462,10 @@ def make_station_nut(
 def make_channel_nut(
         agency='', network='', station='', location='', channel='', **kwargs):
 
-    codes = '\0'.join((agency, network, station, location, channel))
+    codes = separator.join((agency, network, station, location, channel))
 
     return Nut(
-        kind='channel',
+        kind_id=CHANNEL,
         codes=codes,
         **kwargs)
 
@@ -380,12 +475,38 @@ def make_event_nut(name='', **kwargs):
     codes = name
 
     return Nut(
-        kind='event',
-        codes=codes,
+        kind_id=EVENT, codes=codes,
         **kwargs)
 
 
+def group_channels(nuts):
+    by_ansl = {}
+    for nut in nuts:
+        if nut.kind_id != CHANNEL:
+            continue
+
+        ansl = nut.codes[:4]
+
+        if ansl not in by_ansl:
+            by_ansl[ansl] = {}
+
+        group = by_ansl[ansl]
+
+        k = nut.codes[4][:-1], nut.deltat, nut.tmin, nut.tmax
+
+        if k not in group:
+            group[k] = set()
+
+        group.add(nut.codes[4])
+
+    return by_ansl
+
+
 __all__ = [
+    'to_kind',
+    'to_kinds',
+    'to_kind_id',
+    'to_kind_ids',
     'Content',
     'Waveform',
     'Station',

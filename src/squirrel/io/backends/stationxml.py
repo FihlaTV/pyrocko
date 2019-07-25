@@ -1,3 +1,5 @@
+from __future__ import absolute_import, print_function
+
 import time
 from pyrocko.io.io_common import get_stats  # noqa
 from ... import model
@@ -40,35 +42,20 @@ def iload(format, file_path, segment, content):
             if tmax is not None and tmax > far_future:
                 tmax = None
 
-            nut = model.make_station_nut(
-                file_segment=0,
-                file_element=inut,
-                agency=agn,
-                network=net,
-                station=sta,
-                tmin=tmin,
-                tmax=tmax)
-
-            if 'station' in content:
-                nut.content = model.Station(
-                    lat=station.latitude.value,
-                    lon=station.longitude.value,
-                    elevation=value_or_none(station.elevation),
-                    **nut.station_kwargs)
-
-            yield nut
-            inut += 1
-
+            loc_codes = []
             for channel in station.channel_list:
                 cha = channel.code
                 loc = channel.location_code.strip()
+                loc_codes.append(loc)
 
                 tmin = channel.start_date
                 tmax = channel.end_date
                 if tmax is not None and tmax > far_future:
                     tmax = None
 
-                if channel.sample_rate is not None:
+                if channel.sample_rate is not None \
+                        and channel.sample_rate.value != 0.0:
+
                     deltat = 1.0 / channel.sample_rate.value
 
                 nut = model.make_channel_nut(
@@ -94,4 +81,26 @@ def iload(format, file_path, segment, content):
                         **nut.channel_kwargs)
 
                 yield nut
+                inut += 1
+
+            for loc in loc_codes:
+                station_nut = model.make_station_nut(
+                    file_segment=0,
+                    file_element=inut,
+                    agency=agn,
+                    network=net,
+                    station=sta,
+                    location=loc,
+                    tmin=tmin,
+                    tmax=tmax)
+
+                if 'station' in content:
+                    station_nut.content = model.Station(
+                        lat=station.latitude.value,
+                        lon=station.longitude.value,
+                        elevation=value_or_none(station.elevation),
+                        **station_nut.station_kwargs)
+
+
+                yield station_nut
                 inut += 1

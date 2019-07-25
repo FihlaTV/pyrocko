@@ -1,3 +1,5 @@
+from __future__ import absolute_import, print_function
+
 from collections import defaultdict
 from pyrocko.io.io_common import FileLoadError
 

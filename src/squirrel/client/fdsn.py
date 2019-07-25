@@ -1,3 +1,5 @@
+from __future__ import absolute_import, print_function
+
 import time
 import os
 import copy
@@ -8,7 +10,7 @@ try:
 except ImportError:
     import pickle
 import os.path as op
-from .base import Source, Selection
+from .base import Source, Constraint
 from pyrocko.client import fdsn
 
 from pyrocko import config, util
@@ -48,25 +50,32 @@ class FDSNSource(Source):
 
     def __init__(
             self, site,
-            user_credentials=None, auth_token=None,
+            user_credentials=None,
+            auth_token=None,
+            query_args=None,
             noquery_age_max=3600.,
             cache_dir=None):
 
         Source.__init__(self)
 
         self._site = site
-        self._selection = None
+        self._constraint = None
         self._noquery_age_max = noquery_age_max
 
         s = site
-        if auth_token:
+        if auth_token is not None:
             s += auth_token
-        if user_credentials:
+        if user_credentials is not None:
             s += user_credentials[0]
             s += user_credentials[1]
+        if query_args is not None:
+            s += ','.join(
+                '%s:%s' % (k, query_args[k])
+                for k in sorted(query_args.keys()))
 
         self._auth_token = auth_token
         self._user_credentials = user_credentials
+        self._query_args = query_args
 
         self._cache_dir = op.join(
             cache_dir or config.config().cache_dir,
@@ -74,66 +83,71 @@ class FDSNSource(Source):
             ehash(s))
 
         util.ensuredir(self._cache_dir)
-        self._load_selection()
+        self._load_constraint()
 
-    def get_channel_file_paths(self, selection=None):
+    def get_channel_file_paths(self):
         return [op.join(self._cache_dir, 'channels.stationxml')]
 
-    def update_channel_inventory(self, selection=None):
-        if selection is None:
-            selection = Selection()
+    def update_channel_inventory(self, squirrel, constraint=None):
+        if constraint is None:
+            constraint = Selection()
 
-        if self._selection and self._selection.contains(selection) \
-                and not self._stale_channel_inventory(selection):
+        if self._constraint and self._constraint.contains(constraint) \
+                and not self._stale_channel_inventory():
 
             logger.info(
                 'using cached channel information for site %s'
                 % self._site)
 
-            return
-
-        if self._selection:
-            selection = copy.deepcopy(self._selection)
-            selection.add(selection)
-
-        channel_sx = self._do_channel_query(selection)
-        channel_sx.created = None  # timestamp would ruin diff
-
-        fn = self.get_channel_file_paths(selection)[0]
-        fn_temp = fn + '.%i.temp' % os.getpid()
-        channel_sx.dump_xml(filename=fn_temp)
-
-        if diff(fn, fn_temp):
-            os.rename(fn_temp, fn)
-            logger.info('changed: %s' % fn)
         else:
-            logger.info('no change: %s' % fn)
-            os.unlink(fn_temp)
+            if self._constraint:
+                constraint_temp = copy.deepcopy(self._constraint)
+                constraint_temp.expand(constraint)
+                constraint = constraint_temp
 
-        self._selection = selection
-        self._dump_selection()
+            channel_sx = self._do_channel_query(constraint)
+            channel_sx.created = None  # timestamp would ruin diff
 
-    def _do_channel_query(self, selection):
+            fn = self.get_channel_file_paths()[0]
+            fn_temp = fn + '.%i.temp' % os.getpid()
+            channel_sx.dump_xml(filename=fn_temp)
+
+            if diff(fn, fn_temp):
+                os.rename(fn_temp, fn)
+                logger.info('changed: %s' % fn)
+            else:
+                logger.info('no change: %s' % fn)
+                os.unlink(fn_temp)
+
+            self._constraint = constraint
+            self._dump_constraint()
+
+        squirrel.add(self.get_channel_file_paths())
+
+    def _do_channel_query(self, constraint):
         extra_args = {
             'iris': dict(matchtimeseries=True),
         }.get(self._site, {})
 
         if self._site in sites_not_supporting_startbefore:
-            if selection.tmin is not None:
-                extra_args['starttime'] = selection.tmin
-            if selection.tmax is not None:
-                extra_args['endtime'] = selection.tmax
+            if constraint.tmin is not None:
+                extra_args['starttime'] = constraint.tmin
+            if constraint.tmax is not None:
+                extra_args['endtime'] = constraint.tmax
 
         else:
-            if selection.tmin is not None:
-                extra_args['endafter'] = selection.tmin
-            if selection.tmax is not None:
-                extra_args['startbefore'] = selection.tmax
+            if constraint.tmin is not None:
+                extra_args['endafter'] = constraint.tmin
+            if constraint.tmax is not None:
+                extra_args['startbefore'] = constraint.tmax
 
         extra_args.update(
             includerestricted=(
                 self._user_credentials is not None
                 or self._auth_token is not None))
+
+        if self._query_args is not None:
+            extra_args.update(self._query_args)
 
         logger.info(
             'querying channel information from site %s'
@@ -147,23 +161,23 @@ class FDSNSource(Source):
 
         return channel_sx
 
-    def _get_selection_file_path(self):
-        return op.join(self._cache_dir, 'selection.pickle')
+    def _get_constraint_file_path(self):
+        return op.join(self._cache_dir, 'constraint.pickle')
 
-    def _load_selection(self):
-        fn = self._get_selection_file_path()
+    def _load_constraint(self):
+        fn = self._get_constraint_file_path()
         if op.exists(fn):
             with open(fn, 'rb') as f:
-                self._selection = pickle.load(f)
+                self._constraint = pickle.load(f)
         else:
-            self._selection = None
+            self._constraint = None
 
-    def _dump_selection(self):
-        with open(self._get_selection_file_path(), 'wb') as f:
-            pickle.dump(self._selection, f)
+    def _dump_constraint(self):
+        with open(self._get_constraint_file_path(), 'wb') as f:
+            pickle.dump(self._constraint, f, protocol=2)
 
-    def _stale_channel_inventory(self, selection):
-        for file_path in self.get_channel_file_paths(selection):
+    def _stale_channel_inventory(self):
+        for file_path in self.get_channel_file_paths():
             try:
                 t = os.stat(file_path)[8]
                 return t < time.time() - self._noquery_age_max
@@ -171,3 +185,16 @@ class FDSNSource(Source):
                 return True
 
         return False
+
+    def update_waveform_inventory(self, squirrel, constraint):
+        from pyrocko.squirrel import Squirrel
+
+        # get meta information of stuff available through this source
+        sub_squirrel = Squirrel(database=squirrel.get_database())
+        sub_squirrel.add(self.get_channel_file_paths(), check=False)
+
+        deltats = set()
+        nuts = sub_squirrel.get_nuts(
+            'channel', constraint.tmin, constraint.tmax)
+
+        deltats = set(nut.deltat for nut in nuts)

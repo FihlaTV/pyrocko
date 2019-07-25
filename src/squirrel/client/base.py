@@ -1,22 +1,27 @@
+from __future__ import absolute_import, print_function
 
-class Selection(object):
+from pyrocko.guts import Object, Timestamp
 
-    def __init__(self, tmin=None, tmax=None):
-        self.tmin = tmin
-        self.tmax = tmax
 
-    def contains(self, selection):
-        # tmin, tmax = None, None is considered -inf, inf
+class Constraint(Object):
 
-        if self.tmin is not None and selection.tmin is not None:
-            b1 = self.tmin <= selection.tmin
+    tmin = Timestamp.T()
+    tmax = Timestamp.T()
+
+    def contains(self, constraint):
+        '''
+        Check if the constraint completely includes a more restrictive one.
+        '''
+
+        if self.tmin is not None and constraint.tmin is not None:
+            b1 = self.tmin <= constraint.tmin
         elif self.tmin is None:
             b1 = True
         else:
             b1 = False
 
-        if self.tmax is not None and selection.tmax is not None:
-            b2 = selection.tmax <= self.tmax
+        if self.tmax is not None and constraint.tmax is not None:
+            b2 = constraint.tmax <= self.tmax
         elif self.tmax is None:
             b2 = True
         else:
@@ -24,24 +29,28 @@ class Selection(object):
 
         return b1 and b2
 
-    def add(self, selection):
-        if selection.tmin is None or self.tmin is None:
+    def expand(self, constraint):
+        '''
+        Widen constraint to include another given constraint.
+        '''
+
+        if constraint.tmin is None or self.tmin is None:
             self.tmin = None
         else:
-            self.tmin = min(selection.tmin, self.tmin)
+            self.tmin = min(constraint.tmin, self.tmin)
 
-        if selection.tmax is None or self.tmax is None:
+        if constraint.tmax is None or self.tmax is None:
             self.tmax = None
         else:
-            self.tmax = min(selection.tmax, self.tmax)
+            self.tmax = max(constraint.tmax, self.tmax)
 
 
 class Source(object):
 
-    def update_channel_inventory(self, squirrel, selection):
+    def update_channel_inventory(self, squirrel, constraint):
 
         '''
-        Let local inventory be up-to-date with remote for a given selection.
+        Let local inventory be up-to-date with remote for a given constraint.
         '''
 
         pass

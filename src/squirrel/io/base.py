@@ -1,9 +1,12 @@
-from __future__ import absolute_import
+from __future__ import absolute_import, print_function
+
 import logging
 from builtins import str as newstr
 
 from pyrocko.io_common import FileLoadError
 from .backends import mseed, sac, datacube, stationxml, textfiles, virtual
+
+from ..model import to_kind_ids
 
 backend_modules = [mseed, sac, datacube, stationxml, textfiles, virtual]
 
@@ -44,7 +47,7 @@ class UnknownFormat(Exception):
     '''
 
     def __init__(self, format):
-        FileLoadError.__init__(
+        Exception.__init__(
             self, 'unknown format: %s' % format)
 
 
@@ -75,7 +78,7 @@ def detect_format(path):
         with open(path, 'rb') as f:
             data = f.read(512)
 
-    except OSError as e:
+    except (OSError, IOError):
         raise FormatDetectionFailed(path)
 
     fmt = None
@@ -121,10 +124,10 @@ def iload(
     nut may represent a waveform, a station, a channel, an event or other data
     type. The nut itself only contains the meta-information. The actual content
     information is attached to the nut if requested. All nut meta-information
-    is stored in the squirrel meta-information database. If possible, this function
-    avoids accessing the actual disk files and provides the requested
+    is stored in the squirrel meta-information database. If possible, this
+    function avoids accessing the actual disk files and provides the requested
     information straight from the database. Modified files are recognized and
-    reindexed as needed. 
+    reindexed as needed.
     '''
 
     from ..base import Selection
@@ -132,6 +135,7 @@ def iload(
     n_db = 0
     n_load = 0
     selection = None
+    kind_ids = to_kind_ids(content)
 
     if isinstance(paths, (str, newstr)):
         paths = [paths]
@@ -180,11 +184,12 @@ def iload(
                 old_nuts = []
 
             if segment is not None:
-                old_nuts = [nut for nut in old_nuts if nut.segment == segment]
+                old_nuts = [
+                    nut for nut in old_nuts if nut.file_segment == segment]
 
             if old_nuts:
-                db_only_operation = not content or all(
-                    nut.kind in content and nut.content_in_db
+                db_only_operation = not kind_ids or all(
+                    nut.kind_id in kind_ids and nut.content_in_db
                     for nut in old_nuts)
 
                 if db_only_operation:
@@ -192,7 +197,7 @@ def iload(
                                  % path)
 
                     for nut in old_nuts:
-                        if nut.kind in content:
+                        if nut.kind_id in kind_ids:
                             database.undig_content(nut)
 
                         n_db += 1

@@ -120,7 +120,7 @@ class SquirrelTestCase(unittest.TestCase):
                     fpath = common.test_data_file(fn)
                     sq.add(fpath, kinds=kinds)
 
-                s = sq.get_stats()
+                sq.get_stats()
                 if kinds is not None:
                     if isinstance(kinds, str):
                         kinds_ = [kinds]
@@ -150,18 +150,15 @@ class SquirrelTestCase(unittest.TestCase):
                     for (_, codes), count in sq.iter_counts(k):
                         assert count == counts[k][codes]
 
-
                 db = sq.get_database()
                 counts = db.get_counts()
                 for k in counts:
                     assert set(counts[k]) == set(db.get_counts(k))
 
-
                 if persistent is not None:
                     sq._delete()
                 else:
                     del sq
-
 
     def test_dig_undig(self):
         nuts = []
@@ -172,7 +169,7 @@ class SquirrelTestCase(unittest.TestCase):
                     file_format='test',
                     file_segment=0,
                     file_element=file_element,
-                    kind='test'))
+                    kind_id=squirrel.to_kind_id('undefined')))
 
         database = squirrel.Database()
         database.dig(nuts)
@@ -229,11 +226,11 @@ class SquirrelTestCase(unittest.TestCase):
         assert sq.get_nfiles() == 1
         assert sq.get_nnuts() == 1
 
-        assert sq.time_span() == (0., 1.)
+        assert sq.get_time_span() == (0., 1.)
 
         f = StringIO()
-        sq._print_tables(stream=f)
-        database._print_tables(stream=f)
+        sq.print_tables(stream=f)
+        database.print_tables(stream=f)
 
         time.sleep(2)
 
@@ -245,13 +242,13 @@ class SquirrelTestCase(unittest.TestCase):
         assert list(sq.iter_codes()) == [('', '', 'STA', '', '', '')]
         assert list(sq.iter_kinds()) == ['waveform']
 
-        assert len(list(sq.undig_span(-10., 10.))) == 1
-        assert len(list(sq.undig_span(-1., 0.))) == 0
-        assert len(list(sq.undig_span(0., 1.))) == 1
-        assert len(list(sq.undig_span(1., 2.))) == 0
-        assert len(list(sq.undig_span(-1., 0.5))) == 1
-        assert len(list(sq.undig_span(0.5, 1.5))) == 1
-        assert len(list(sq.undig_span(0.2, 0.7))) == 1
+        assert len(list(sq.get_nuts('waveform', -10., 10.))) == 1
+        assert len(list(sq.get_nuts('waveform', -1., 0.))) == 0
+        assert len(list(sq.get_nuts('waveform', 0., 1.))) == 1
+        assert len(list(sq.get_nuts('waveform', 1., 2.))) == 0
+        assert len(list(sq.get_nuts('waveform', -1., 0.5))) == 1
+        assert len(list(sq.get_nuts('waveform', 0.5, 1.5))) == 1
+        assert len(list(sq.get_nuts('waveform', 0.2, 0.7))) == 1
 
         sq.add(fns, check=True)
         assert sq.get_nfiles() == 1
@@ -260,7 +257,7 @@ class SquirrelTestCase(unittest.TestCase):
         assert list(sq.iter_codes()) == [('', '', 'STA', '', '', '')]
         assert list(sq.iter_kinds()) == ['waveform']
 
-        assert len(list(sq.undig_span(-10., 10.))) == 1
+        assert len(list(sq.get_nuts('waveform', -10., 10.))) == 1
 
         shutil.rmtree(tempdir)
 
@@ -271,7 +268,7 @@ class SquirrelTestCase(unittest.TestCase):
         assert list(sq.iter_codes()) == []
         assert list(sq.iter_kinds()) == []
 
-        assert len(list(sq.undig_span(-10., 10.))) == 0
+        assert len(list(sq.get_nuts('waveform', -10., 10.))) == 0
 
         fns = make_files(2)
         sq.add(fns)
@@ -312,7 +309,7 @@ class SquirrelTestCase(unittest.TestCase):
                     tmin_offset=tmin_offset,
                     tmax_seconds=tmax_seconds,
                     tmax_offset=tmax_offset,
-                    kind='test'))
+                    kind_id=squirrel.to_kind_id('undefined')))
 
         squirrel.io.backends.virtual.add_nuts(all_nuts)
 
@@ -345,7 +342,7 @@ class SquirrelTestCase(unittest.TestCase):
                 check=False)
 
         with bench.run('get time span'):
-            tmin, tmax = sq.time_span()
+            tmin, tmax = sq.get_time_span()
 
         with bench.run('get codes'):
             for codes in sq.iter_codes():
@@ -363,7 +360,8 @@ class SquirrelTestCase(unittest.TestCase):
                 tmin = tmin_g + iwin * tinc
                 tmax = tmin_g + (iwin+1) * tinc
 
-                expect.append(len(list(sq._undig_span_naiv(tmin, tmax))))
+                expect.append(
+                    len(list(sq._get_nuts_naiv('undefined', tmin, tmax))))
                 assert expect[-1] >= 10
 
         with bench.run('undig span'):
@@ -371,7 +369,8 @@ class SquirrelTestCase(unittest.TestCase):
                 tmin = tmin_g + iwin * tinc
                 tmax = tmin_g + (iwin+1) * tinc
 
-                assert len(list(sq.undig_span(tmin, tmax))) == expect[iwin]
+                assert len(list(
+                    sq.get_nuts('undefined', tmin, tmax))) == expect[iwin]
 
         return bench
 
@@ -513,5 +512,5 @@ class SquirrelTestCase(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    util.setup_logging('test_catalog', 'info')
+    util.setup_logging('test_squirrel', 'info')
     unittest.main()
