@@ -71,6 +71,7 @@ def iload(format, file_path, segment, content):
                 if tmax is not None and tmax > far_future:
                     tmax = None
 
+                deltat = None
                 if channel.sample_rate is not None \
                         and channel.sample_rate.value != 0.0:
 
