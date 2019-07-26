@@ -242,13 +242,13 @@ class SquirrelTestCase(unittest.TestCase):
         assert list(sq.iter_codes()) == [('', '', 'STA', '', '', '')]
         assert list(sq.iter_kinds()) == ['waveform']
 
-        assert len(list(sq.get_nuts('waveform', -10., 10.))) == 1
-        assert len(list(sq.get_nuts('waveform', -1., 0.))) == 0
-        assert len(list(sq.get_nuts('waveform', 0., 1.))) == 1
-        assert len(list(sq.get_nuts('waveform', 1., 2.))) == 0
-        assert len(list(sq.get_nuts('waveform', -1., 0.5))) == 1
-        assert len(list(sq.get_nuts('waveform', 0.5, 1.5))) == 1
-        assert len(list(sq.get_nuts('waveform', 0.2, 0.7))) == 1
+        assert len(list(sq.get_nuts('waveform', tmin=-10., tmax=10.))) == 1
+        assert len(list(sq.get_nuts('waveform', tmin=-1., tmax=0.))) == 0
+        assert len(list(sq.get_nuts('waveform', tmin=0., tmax=1.))) == 1
+        assert len(list(sq.get_nuts('waveform', tmin=1., tmax=2.))) == 0
+        assert len(list(sq.get_nuts('waveform', tmin=-1., tmax=0.5))) == 1
+        assert len(list(sq.get_nuts('waveform', tmin=0.5, tmax=1.5))) == 1
+        assert len(list(sq.get_nuts('waveform', tmin=0.2, tmax=0.7))) == 1
 
         sq.add(fns, check=True)
         assert sq.get_nfiles() == 1
@@ -257,7 +257,7 @@ class SquirrelTestCase(unittest.TestCase):
         assert list(sq.iter_codes()) == [('', '', 'STA', '', '', '')]
         assert list(sq.iter_kinds()) == ['waveform']
 
-        assert len(list(sq.get_nuts('waveform', -10., 10.))) == 1
+        assert len(list(sq.get_nuts('waveform', tmin=-10., tmax=10.))) == 1
 
         shutil.rmtree(tempdir)
 
@@ -268,7 +268,7 @@ class SquirrelTestCase(unittest.TestCase):
         assert list(sq.iter_codes()) == []
         assert list(sq.iter_kinds()) == []
 
-        assert len(list(sq.get_nuts('waveform', -10., 10.))) == 0
+        assert len(list(sq.get_nuts('waveform', tmin=-10., tmax=10.))) == 0
 
         fns = make_files(2)
         sq.add(fns)
@@ -361,7 +361,7 @@ class SquirrelTestCase(unittest.TestCase):
                 tmax = tmin_g + (iwin+1) * tinc
 
                 expect.append(
-                    len(list(sq._get_nuts_naiv('undefined', tmin, tmax))))
+                    len(list(sq._get_nuts_naiv('undefined', tmin=tmin, tmax=tmax))))
                 assert expect[-1] >= 10
 
         with bench.run('undig span'):
@@ -370,7 +370,7 @@ class SquirrelTestCase(unittest.TestCase):
                 tmax = tmin_g + (iwin+1) * tinc
 
                 assert len(list(
-                    sq.get_nuts('undefined', tmin, tmax))) == expect[iwin]
+                    sq.get_nuts('undefined', tmin=tmin, tmax=tmax))) == expect[iwin]
 
         return bench
 
@@ -507,8 +507,7 @@ class SquirrelTestCase(unittest.TestCase):
         database = squirrel.Database()
         sq = squirrel.Squirrel(database=database)
         sq.add_fdsn_site('geofon')
-        sel = squirrel.client.Selection(tmin=tmin, tmax=tmax)
-        sq.update_channel_inventory(sel)
+        sq.update(tmin=tmin, tmax=tmax)
 
 
 if __name__ == "__main__":

@@ -193,8 +193,8 @@ class FDSNSource(Source):
         sub_squirrel = Squirrel(database=squirrel.get_database())
         sub_squirrel.add(self.get_channel_file_paths(), check=False)
 
-        deltats = set()
         nuts = sub_squirrel.get_nuts(
-            'channel', constraint.tmin, constraint.tmax)
+            'channel', tmin=constraint.tmin, tmax=constraint.tmax)
 
         deltats = set(nut.deltat for nut in nuts)
+        print(deltats)

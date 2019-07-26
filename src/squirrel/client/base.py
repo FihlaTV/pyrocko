@@ -5,8 +5,8 @@ from pyrocko.guts import Object, Timestamp
 
 class Constraint(Object):
 
-    tmin = Timestamp.T()
-    tmax = Timestamp.T()
+    tmin = Timestamp.T(optional=True)
+    tmax = Timestamp.T(optional=True)
 
     def contains(self, constraint):
         '''

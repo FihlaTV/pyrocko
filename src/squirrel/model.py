@@ -75,6 +75,27 @@ def int_or_g_tmax(x):
         return int(x)
 
 
+def tmin_or_none(x):
+    if x == g_tmin:
+        return None
+    else:
+        return x
+
+
+def tmax_or_none(x):
+    if x == g_tmax:
+        return None
+    else:
+        return x
+
+
+def time_or_none_to_str(x):
+    if x is None:
+        return '...'.ljust(17)
+    else:
+        return util.time_to_str(x)
+
+
 def tsplit(t):
     if t is None:
         return None, 0.0
@@ -124,8 +145,35 @@ class Content(Object):
     '''
 
     @property
-    def scodes(self):
+    def str_codes(self):
         return '.'.join(self.codes)
+
+    @property
+    def str_time_span(self):
+        tmin, tmax = self.time_span
+        if tmin == tmax:
+            return '%s' % time_or_none_to_str(tmin)
+        else:
+            return '%s - %s' % (
+                time_or_none_to_str(tmin), time_or_none_to_str(tmax))
+
+    @property
+    def summary(self):
+        return '%s %-16s %s' % (
+            self.__class__.__name__, self.str_codes, self.str_time_span)
+
+    def __lt__(self, other):
+        return self.__key__() < other.__key__()
+
+    def __key__(self):
+        return self.codes, self.time_span_g_clipped
+
+    @property
+    def time_span_g_clipped(self):
+        tmin, tmax = self.time_span
+        return (
+            tmin if tmin is not None else g_tmin,
+            tmax if tmax is not None else g_tmax)
 
 
 class Waveform(Content):
@@ -158,6 +206,10 @@ class Waveform(Content):
             self.agency, self.network, self.station, self.location,
             self.channel, self.extra)
 
+    @property
+    def time_span(self):
+        return (self.tmin, self.tmax)
+
 
 class Station(Content):
     '''
@@ -181,18 +233,35 @@ class Station(Content):
 
     @property
     def codes(self):
-        return (self.agency, self.network, self.station, self.location)
+        return (
+            self.agency, self.network, self.station,
+            self.location if self.location is not None else '*')
+
+    @property
+    def time_span(self):
+        return (self.tmin, self.tmax)
 
     def get_pyrocko_station(self):
         from pyrocko import model
         return model.Station(
             network=self.network,
             station=self.station,
-            location=self.location,
+            location=self.location if self.location is not None else '*',
             lat=self.lat,
             lon=self.lon,
             elevation=self.elevation,
             depth=self.depth)
+
+    def _get_pyrocko_station_args(self):
+        return (
+            '*',
+            self.network,
+            self.station,
+            self.location if self.location is not None else '*',
+            self.lat,
+            self.lon,
+            self.elevation,
+            self.depth)
 
 
 class Channel(Content):
@@ -224,12 +293,34 @@ class Channel(Content):
             self.agency, self.network, self.station, self.location,
             self.channel)
 
+    @property
+    def time_span(self):
+        return (self.tmin, self.tmax)
+
     def get_pyrocko_channel(self):
         from pyrocko import model
         return model.Channel(
             name=self.channel,
             azimuth=self.azimuth,
             dip=self.dip)
+
+    def _get_pyrocko_station_args(self):
+        return (
+            self.channel,
+            self.network,
+            self.station,
+            self.location,
+            self.lat,
+            self.lon,
+            self.elevation,
+            self.depth)
+
+    def _get_pyrocko_channel_args(self):
+        return (
+            '*',
+            self.channel,
+            self.azimuth,
+            self.dip)
 
 
 class Response(Content):
@@ -255,6 +346,10 @@ class Event(Content):
     depth = Float.T(optional=True)
 
     magnitude = Float.T(optional=True)
+
+    @property
+    def time_span(self):
+        return (self.time, self.time)
 
 
 class Nut(Object):
@@ -408,9 +503,9 @@ class Nut(Object):
             agency=agency,
             network=network,
             station=station,
-            location=location,
-            tmin=self.tmin,
-            tmax=self.tmax)
+            location=location if location != '*' else None,
+            tmin=tmin_or_none(self.tmin),
+            tmax=tmax_or_none(self.tmax))
 
     @property
     def channel_kwargs(self):
@@ -423,8 +518,8 @@ class Nut(Object):
             station=station,
             location=location,
             channel=channel,
-            tmin=self.tmin,
-            tmax=self.tmax,
+            tmin=tmin_or_none(self.tmin),
+            tmax=tmax_or_none(self.tmax),
             deltat=self.deltat)
 
     @property

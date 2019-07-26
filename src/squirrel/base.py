@@ -5,6 +5,8 @@ import os
 import re
 import threading
 import sqlite3
+import logging
+from collections import defaultdict
 
 from pyrocko.io_common import FileLoadError
 from pyrocko.guts import Object, Int, List, Tuple, String, Timestamp, Dict
@@ -14,6 +16,9 @@ from . import model, io
 
 from .model import to_kind_ids, to_kind_id, to_kind, separator
 from .client import fdsn
+from . import client
+
+logger = logging.getLogger('pyrocko.squirrel.base')
 
 
 g_databases = {}
@@ -23,14 +28,14 @@ class NotAvailable(Exception):
     pass
 
 
-def wrap(l, width=80, indent=''):
-    l = list(l)
-    fwidth = max(len(s) for s in l)
+def wrap(lines, width=80, indent=''):
+    lines = list(lines)
+    fwidth = max(len(s) for s in lines)
     nx = max(1, (80-len(indent)) // (fwidth+1))
     i = 0
     rows = []
-    while i < len(l):
-        rows.append(indent + ' '.join(x.ljust(fwidth) for x in l[i:i+nx]))
+    while i < len(lines):
+        rows.append(indent + ' '.join(x.ljust(fwidth) for x in lines[i:i+nx]))
         i += nx
 
     return '\n'.join(rows)
@@ -62,6 +67,52 @@ def make_unique_name():
         g_icount += 1
 
     return name
+
+
+def codes_fill(n, codes):
+    return codes[:n] + ('*',) * (n-len(codes))
+
+
+kind_to_ncodes = {
+    'station': 4,
+    'channel': 5,
+    'waveform': 6}
+
+
+def codes_patterns_for_kind(kind, codes):
+    cfill = codes_fill(kind_to_ncodes[kind], codes)
+
+    if kind == 'station':
+        cfill2 = list(cfill)
+        cfill2[3] = '[*]'
+        return cfill, cfill2
+
+    return (cfill,)
+
+
+def group_channels(channels):
+    groups = defaultdict(list)
+    for channel in channels:
+        codes = channel.codes
+        gcodes = codes[:-1] + (codes[-1][:-1],)
+        groups[gcodes].append(channel)
+
+    return groups
+
+
+def pyrocko_station_from_channel_group(group, extra_args):
+    list_of_args = [channel._get_pyrocko_station_args() for channel in group]
+    args = util.consistency_merge(list_of_args + extra_args)
+    from pyrocko import model as pmodel
+    return pmodel.Station(
+        network=args[0],
+        station=args[1],
+        location=args[2],
+        lat=args[3],
+        lon=args[4],
+        elevation=args[5],
+        depth=args[6],
+        channels=[ch.get_pyrocko_channel() for ch in group])
 
 
 class Selection(object):
@@ -675,13 +726,16 @@ class Squirrel(Selection):
             query_args=query_args,
             noquery_age_max=noquery_age_max))
 
-    def get_nuts(self, kind, tmin=None, tmax=None, codes=None):
+    def get_nuts(
+            self, kind, obj=None, tmin=None, tmax=None, time=None, codes=None):
         '''
         Iterate content intersecting with the half open interval [tmin, tmax[.
 
         :param kind: ``str``, content kind to extract
         :param tmin: timestamp, start time of interval
         :param tmax: timestamp, end time of interval
+        :param time: timestamp, query time instant (sets tmin and tmax)
+        :param codes: tuple of str, pattern of content codes to be matched
 
         Complexity: O(log N)
 
@@ -689,9 +743,20 @@ class Squirrel(Selection):
         intersecting content.
         '''
 
+        if time is not None:
+            tmin = time
+            tmax = time
+
+        if obj is not None:
+            tmin = tmin if tmin is not None else obj.tmin
+            tmax = tmax if tmax is not None else obj.tmax
+            codes = codes if codes is not None else obj.codes
+
         tmin_avail, tmax_avail = self.get_time_span()
         if tmin is None:
             tmin = tmin_avail
+
+        if tmax is None:
             tmax = tmax_avail
 
         tmin_seconds, tmin_offset = model.tsplit(tmin)
@@ -725,10 +790,12 @@ class Squirrel(Selection):
 
         extra_cond = ['%(db)s.%(nuts)s.tmax_seconds >= ?']
         args.append(tmin_seconds)
-
         if codes is not None:
-            extra_cond.append('kind_codes.codes GLOB ?')
-            args.append(separator.join(codes))
+            pats = codes_patterns_for_kind(kind, codes)
+            extra_cond.append(
+                ' ( %s ) ' % ' OR '.join(
+                    ('kind_codes.codes GLOB ?',) * len(pats)))
+            args.extend(separator.join(pat) for pat in pats)
 
         sql = ('''
             SELECT
@@ -855,7 +922,7 @@ class Squirrel(Selection):
 
     def iter_counts(self, kind=None):
         '''
-        Iterate over number of occurences of any (kind, codes) combination.
+        Iterate over number of occurrences of any (kind, codes) combination.
 
         :param kind: if given, get counts only for selected content type
 
@@ -881,7 +948,7 @@ class Squirrel(Selection):
 
     def get_codes(self, kind=None):
         '''
-        Get itentifier code sequences available in selection.
+        Get identifier code sequences available in selection.
 
         :param kind: if given, get codes only for selected content type
 
@@ -893,7 +960,7 @@ class Squirrel(Selection):
 
     def get_counts(self, kind=None):
         '''
-        Get number of occurences of any (kind, codes) combination.
+        Get number of occurrences of any (kind, codes) combination.
 
         :param kind: if given, get codes only for selected content type
 
@@ -914,9 +981,21 @@ class Squirrel(Selection):
         else:
             return d
 
-    def update_channel_inventory(self, selection):
+    def update(self, constraint=None, **kwargs):
+        '''
+        Make sure channel inventory is up to date for a given selection.
+
+        This function triggers all attached sources, to check for updates in
+        the metadata. The sources will only submit queries when their
+        expiration date has passed, or if the selection spans into previously
+        unseen times or areas.
+        '''
+
+        if constraint is None:
+            constraint = client.Constraint(**kwargs)
+
         for source in self._sources:
-            source.update_channel_inventory(self, selection)
+            source.update_channel_inventory(self, constraint)
 
     def update_waveform_inventory(self, selection):
         for source in self._sources:
@@ -980,41 +1059,74 @@ class Squirrel(Selection):
 
         return self._contents[nut.key]
 
-    def get_stations(self, tmin=None, tmax=None, codes=None):
-
-        nuts = list(
-            self.get_nuts('station', tmin=tmin, tmax=tmax, codes=codes))
-
-        self.check_duplicates(nuts)
-
-        return [
-            self.get_content(nut)
-            for nut in nuts]
-
     def check_duplicates(self, nuts):
-        print('should check for duplicates')
+        d = defaultdict(list)
+        for nut in nuts:
+            d[nut.codes].append(nut)
 
-    def get_channels(self, station):
-        nuts = list(
-            self.get_nuts(
-                'channel', tmin=station.tmin, tmax=station.tmax,
-                codes=station.codes+('*',)))
+        for codes, group in d.items():
+            if len(group) > 1:
+                logger.warn(
+                    'Multiple entries maching codes %s'
+                    % '.'.join(codes.split(separator)))
 
+    def get_stations(self, *args, **kwargs):
+        nuts = list(self.get_nuts('station', *args, **kwargs))
         self.check_duplicates(nuts)
+        return sorted(self.get_content(nut) for nut in nuts)
 
-        return [
-            self.get_content(nut)
-            for nut in nuts]
+    def get_channels(self, *args, **kwargs):
+        nuts = list(self.get_nuts('channel', *args, **kwargs))
+        self.check_duplicates(nuts)
+        return sorted(self.get_content(nut) for nut in nuts)
 
-    def get_pyrocko_stations(self, tmin=None, tmax=None, codes=None):
+    def get_pyrocko_stations(self, *args, **kwargs):
+        from pyrocko import model as pmodel
+
+        by_nsl = defaultdict(lambda: (list(), list()))
+        for station in self.get_stations(*args, **kwargs):
+            sargs = station._get_pyrocko_station_args()
+            nsl = sargs[1:4]
+            by_nsl[nsl][0].append(sargs)
+
+        for channel in self.get_channels(*args, **kwargs):
+            sargs = channel._get_pyrocko_station_args()
+            nsl = sargs[1:4]
+            sargs_list, channels_list = by_nsl[nsl]
+            sargs_list.append(sargs)
+            channels_list.append(channel)
+
         pstations = []
-        for station in self.get_stations(tmin=tmin, tmax=tmax, codes=codes):
-            pstation = station.get_pyrocko_station()
-            self.get_channels(station)
-            pstation.channels = [
-                ch.get_pyrocko_channel() for ch in self.get_channels(station)]
+        nsls = list(by_nsl.keys())
+        nsls.sort()
+        for nsl in nsls:
+            sargs_list, channels_list = by_nsl[nsl]
+            sargs = util.consistency_merge(sargs_list)
 
-            pstations.append(pstation)
+            by_c = defaultdict(list)
+            for ch in channels_list:
+                by_c[ch.channel].append(ch._get_pyrocko_channel_args())
+
+            chas = list(by_c.keys())
+            chas.sort()
+            pchannels = []
+            for cha in chas:
+                list_of_cargs = by_c[cha]
+                cargs = util.consistency_merge(list_of_cargs)
+                pchannels.append(pmodel.Channel(
+                    name=cargs[0],
+                    azimuth=cargs[1],
+                    dip=cargs[2]))
+
+            pstations.append(pmodel.Station(
+                network=sargs[0],
+                station=sargs[1],
+                location=sargs[2],
+                lat=sargs[3],
+                lon=sargs[4],
+                elevation=sargs[5],
+                depth=sargs[6],
+                channels=pchannels))
 
         return pstations
 
@@ -1454,7 +1566,9 @@ class Database(object):
     def print_tables(self, stream=None):
         for table in [
                 'files',
-                'nuts']:
+                'nuts',
+                'kind_codes',
+                'kind_codes_count']:
 
             self.print_table(table, stream=stream)
 
@@ -1462,6 +1576,10 @@ class Database(object):
 
         if stream is None:
             stream = sys.stdout
+
+        class hstr(str):
+            def __repr__(self):
+                return self
 
         w = stream.write
         w('\n')
@@ -1473,12 +1591,12 @@ class Database(object):
         if name in self._tables:
             headers = self._tables[name]
             tab.append([None for _ in headers])
-            tab.append([x[0] for x in headers])
-            tab.append([x[1] for x in headers])
+            tab.append([hstr(x[0]) for x in headers])
+            tab.append([hstr(x[1]) for x in headers])
             tab.append([None for _ in headers])
 
         for row in self._conn.execute(sql):
-            tab.append([str(x) for x in row])
+            tab.append([x for x in row])
 
         widths = [
             max((len(repr(x)) if x is not None else 0) for x in col)
