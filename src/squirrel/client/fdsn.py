@@ -11,6 +11,7 @@ except ImportError:
     import pickle
 import os.path as op
 from .base import Source, Constraint
+from ..model import WaveformPromise
 from pyrocko.client import fdsn
 
 from pyrocko import config, util
@@ -92,10 +93,11 @@ class FDSNSource(Source):
         self._user_credentials = user_credentials
         self._query_args = query_args
 
+        self._hash = ehash(s)
         self._cache_dir = op.join(
             cache_dir or config.config().cache_dir,
             'fdsn',
-            ehash(s))
+            self._hash)
 
         util.ensuredir(self._cache_dir)
         self._load_constraint()
@@ -211,5 +213,9 @@ class FDSNSource(Source):
         nuts = sub_squirrel.get_nuts(
             'channel', tmin=constraint.tmin, tmax=constraint.tmax)
 
-        deltats = set(nut.deltat for nut in nuts)
-        print(deltats)
+        for nut in nuts:
+            wp = WaveformPromise(
+                source_hash=self._hash,
+                **nut.waveform_promise_kwargs)
+
+            print(wp)

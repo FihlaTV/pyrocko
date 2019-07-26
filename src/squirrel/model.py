@@ -14,11 +14,12 @@ g_content_kinds = [
     'station',
     'channel',
     'response',
-    'event']
+    'event',
+    'waveform_promise']
 
 g_content_kind_ids = (
-    UNDEFINED, WAVEFORM, STATION, CHANNEL, RESPONSE, EVENT) = range(
-        len(g_content_kinds))
+    UNDEFINED, WAVEFORM, STATION, CHANNEL, RESPONSE, EVENT,
+    WAVEFORM_PROMISE) = range(len(g_content_kinds))
 
 g_tmin = int(util.str_to_time('1900-01-01 00:00:00'))
 g_tmax = int(util.str_to_time('2100-01-01 00:00:00'))
@@ -199,6 +200,36 @@ class Waveform(Content):
         serialize_as='base64',
         serialize_dtype=num.dtype('<f4'),
         help='numpy array with data samples')
+
+    @property
+    def codes(self):
+        return (
+            self.agency, self.network, self.station, self.location,
+            self.channel, self.extra)
+
+    @property
+    def time_span(self):
+        return (self.tmin, self.tmax)
+
+
+class WaveformPromise(Content):
+    '''
+    Information about a waveform potentially available at a remote site.
+    '''
+
+    agency = String.T(default='', help='Agency code (2-5)')
+    network = String.T(default='', help='Deployment/network code (1-8)')
+    station = String.T(default='', help='Station code (1-5)')
+    location = String.T(default='', help='Location code (0-2)')
+    channel = String.T(default='', help='Channel code (3)')
+    extra = String.T(default='', help='Extra/custom code')
+
+    tmin = Timestamp.T()
+    tmax = Timestamp.T()
+
+    deltat = Float.T(optional=True)
+
+    source_hash = String.T()
 
     @property
     def codes(self):
@@ -498,6 +529,21 @@ class Nut(Object):
             deltat=self.deltat)
 
     @property
+    def waveform_promise_kwargs(self):
+        agency, network, station, location, channel = \
+            self.codes.split(separator)
+
+        return dict(
+            agency=agency,
+            network=network,
+            station=station,
+            location=location,
+            channel=channel,
+            tmin=self.tmin,
+            tmax=self.tmax,
+            deltat=self.deltat)
+
+    @property
     def station_kwargs(self):
         agency, network, station, location = self.codes.split(separator)
         return dict(
@@ -540,6 +586,19 @@ def make_waveform_nut(
 
     return Nut(
         kind_id=WAVEFORM,
+        codes=codes,
+        **kwargs)
+
+
+def make_waveform_promise_nut(
+        agency='', network='', station='', location='', channel='', extra='',
+        **kwargs):
+
+    codes = separator.join(
+        (agency, network, station, location, channel, extra))
+
+    return Nut(
+        kind_id=WAVEFORM_PROMISE,
         codes=codes,
         **kwargs)
 
@@ -605,6 +664,7 @@ __all__ = [
     'to_kind_ids',
     'Content',
     'Waveform',
+    'WaveformPromise',
     'Station',
     'Channel',
     'Nut',

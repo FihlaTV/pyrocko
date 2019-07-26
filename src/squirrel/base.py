@@ -987,9 +987,13 @@ class Squirrel(Selection):
         for source in self._sources:
             source.update_channel_inventory(self, constraint)
 
-    def update_waveform_inventory(self, selection):
+    def update_waveform_inventory(self, constraint=None, **kwargs):
+
+        if constraint is None:
+            constraint = client.Constraint(**kwargs)
+
         for source in self._sources:
-            source.update_waveform_inventory(self, selection)
+            source.update_waveform_inventory(self, constraint)
 
     def get_nfiles(self):
         '''Get number of files in selection.'''
