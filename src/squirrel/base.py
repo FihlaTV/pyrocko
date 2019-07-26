@@ -709,22 +709,12 @@ class Squirrel(Selection):
                 SET file_state = 2
             ''' % self._names)
 
-    def add_fdsn_site(
-            self, site,
-            user_credentials=None,
-            auth_token=None,
-            query_args=None,
-            noquery_age_max=3600.,):
+    def add_fdsn_site(self, *args, **kwargs):
         '''
         Add FDSN site for transparent remote data access.
         '''
 
-        self._sources.append(fdsn.FDSNSource(
-            site,
-            user_credentials=user_credentials,
-            auth_token=auth_token,
-            query_args=query_args,
-            noquery_age_max=noquery_age_max))
+        self._sources.append(fdsn.FDSNSource(*args, **kwargs))
 
     def get_nuts(
             self, kind, obj=None, tmin=None, tmax=None, time=None, codes=None):
@@ -983,12 +973,12 @@ class Squirrel(Selection):
 
     def update(self, constraint=None, **kwargs):
         '''
-        Make sure channel inventory is up to date for a given selection.
+        Update inventory of remote content for a given selection.
 
-        This function triggers all attached sources, to check for updates in
-        the metadata. The sources will only submit queries when their
-        expiration date has passed, or if the selection spans into previously
-        unseen times or areas.
+        This function triggers all attached remote sources, to check for
+        updates in the metadata. The sources will only submit queries when
+        their expiration date has passed, or if the selection spans into
+        previously unseen times or areas.
         '''
 
         if constraint is None:
@@ -1043,6 +1033,14 @@ class Squirrel(Selection):
             tmax=tmax)
 
     def get_content(self, nut):
+        '''
+        Get and possibly load full content for a given index entry from file.
+
+        Loads the actual content objects (channel, station, waveform, ...) from
+        file. For efficiency sibling content (all stuff in the same file
+        segment) will also be loaded as a side effect. The loaded contents are
+        cached in the squirrel object.
+        '''
 
         if nut.key not in self._contents:
             for nut_loaded in io.iload(

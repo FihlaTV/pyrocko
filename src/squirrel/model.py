@@ -353,7 +353,8 @@ class Event(Content):
 
 
 class Nut(Object):
-    '''Container for elementary content meta-information.
+    '''
+    Index entry referencing an elementary piece of content.
 
     So-called *nuts* are used in Pyrocko's Squirrel framework to hold common
     meta-information about individual pieces of waveforms, stations, channels,

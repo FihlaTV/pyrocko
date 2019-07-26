@@ -14,6 +14,7 @@ from .base import Source, Constraint
 from pyrocko.client import fdsn
 
 from pyrocko import config, util
+from pyrocko.io_common import FileLoadError
 
 fdsn.g_timeout = 60.
 
@@ -52,6 +53,7 @@ class FDSNSource(Source):
             self, site,
             user_credentials=None,
             auth_token=None,
+            auth_token_path=None,
             query_args=None,
             noquery_age_max=3600.,
             cache_dir=None):
@@ -62,9 +64,22 @@ class FDSNSource(Source):
         self._constraint = None
         self._noquery_age_max = noquery_age_max
 
+        assert None in (auth_token, auth_token_path)
+
+        if auth_token_path is not None:
+            try:
+                with open(auth_token_path, 'rb') as f:
+                    auth_token = f.read().decode('ascii')
+
+            except OSError as e:
+                raise FileLoadError(
+                    'Cannot load auth token file (%s): %s'
+                    % (str(e), auth_token_path))
+
         s = site
         if auth_token is not None:
             s += auth_token
+
         if user_credentials is not None:
             s += user_credentials[0]
             s += user_credentials[1]
@@ -90,7 +105,7 @@ class FDSNSource(Source):
 
     def update_channel_inventory(self, squirrel, constraint=None):
         if constraint is None:
-            constraint = Selection()
+            constraint = Constraint()
 
         if self._constraint and self._constraint.contains(constraint) \
                 and not self._stale_channel_inventory():
